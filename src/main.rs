@@ -82,14 +82,14 @@ impl App {
         let started_at = Instant::now();
         let mut last_update = Instant::now();
 
-        self.detect_gpus(smi);
+        self.detect_gpus(&smi);
 
         while self.state != AppState::Quitting {
 
             if last_update.elapsed() >= Duration::from_secs(1) {
                 let elapsed = started_at.elapsed().as_secs_f64();
                 self.update_cpu(&mut sys, elapsed);
-                self.update_gpus(elapsed);
+                self.update_gpus(&smi, elapsed);
                 last_update = Instant::now();
             }
             
@@ -167,7 +167,7 @@ impl App {
         }
     }
 
-    fn detect_gpus(&mut self, smi : AllSmi) {
+    fn detect_gpus(&mut self, smi : &AllSmi) {
         for gpu in smi.get_gpu_info() {
             let device = Gpu {
                 name : gpu.name,
@@ -179,12 +179,14 @@ impl App {
         }
     }
 
-    fn update_gpus(&mut self, elapsed : f64) {
+    fn update_gpus(&mut self,smi : &AllSmi, elapsed : f64) {
         const MAX_SAMPLES :usize = 60;
-        for device in self.gpus.iter_mut() {
+        let fresh_vals = smi.get_gpu_info();
+        for (device, fresh) in self.gpus.iter_mut().zip(fresh_vals.iter()) {
 
-            let usage = device.usage;
-            device.history.push((elapsed, usage));
+            device.usage = fresh.utilization;
+            device.temp = fresh.temperature;
+            device.history.push((elapsed, device.usage));
 
             if device.history.len() >= MAX_SAMPLES {
                 device.history.remove(0);

@@ -277,6 +277,16 @@ impl Widget for &App {
             ])
             .split(gpu_block[1]);
 
+        let gpu_gauge_block = Layout::default()
+            .direction(Vertical)
+            .margin(1)
+            .constraints(vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+            ])
+            .split(gpu_info_vert[0]);
+
         //DISK BLOCK
         // let disk_block = Layout::default()
         //     .direction(direction)
@@ -349,6 +359,16 @@ impl Widget for &App {
 
         //GPU SECTORS
         let selected_gpu = &self.gpus[self.selection];
+        let gpu_color= if selected_gpu.name.contains("NVIDIA") {
+            Color::Green
+        } else if selected_gpu.name.contains("AMD") {
+            Color::Red
+        } else if selected_gpu.name.contains("INTEL") {
+            Color::Blue
+        } else {
+            Color::LightMagenta
+        };
+
         let data = &selected_gpu.history;
 
         let display_name = selected_gpu.name
@@ -361,7 +381,7 @@ impl Widget for &App {
             .name(display_name)
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Red))
+            .style(Style::default().fg(gpu_color))
             .data(data);
 
         let latest_time = selected_gpu
@@ -378,7 +398,7 @@ impl Widget for &App {
             .block(Block::bordered()
                 .title("GPU")
                 .style(match self.device {
-                    DeviceSelector::Graphics => {Color::Red},
+                    DeviceSelector::Graphics => {gpu_color},
                     _ => {Color::White}
                 })    
             )
@@ -402,8 +422,20 @@ impl Widget for &App {
             );
         gpu_usage_chart.render(gpu_block[0], buf);
 
-        let gpu_temp = Block::bordered();
-        gpu_temp.render(gpu_info_vert[0], buf);
+        let temp = selected_gpu.temp;
+        let gauge_bound = Block::bordered()
+            .title("GPU Temp(C)")
+            .style(match self.device {
+                DeviceSelector::Graphics => {gpu_color}
+                _ => {Color::White}
+            });
+            gauge_bound.render(gpu_info_vert[0], buf);
+
+        let gpu_temp = Gauge::default()
+            .gauge_style(gpu_color)
+            .ratio((temp as f64) / 100.0)
+            .label(temp.to_string());
+        gpu_temp.render(gpu_gauge_block[1], buf);
 
         let gpu_usage = Block::bordered();
         gpu_usage.render(gpu_info_vert[1], buf);

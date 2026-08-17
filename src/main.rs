@@ -30,7 +30,7 @@ use ratatui::symbols::Marker;
 struct App {
     state : AppState,
     device : DeviceSelector,
-    cpu : Cpu,
+    cpus : Vec<Cpu>,
     gpus : Vec<Gpu>,
     selection : usize,
 }
@@ -82,6 +82,7 @@ impl App {
         let started_at = Instant::now();
         let mut last_update = Instant::now();
 
+        self.detect_cpu(&sys);
         self.detect_gpus(&smi);
 
         while self.state != AppState::Quitting {
@@ -109,9 +110,11 @@ impl App {
         match key.code {
             KeyCode::Up => {
                 self.device = DeviceSelector::Processor;
+                self.clamp_selection();
             },
             KeyCode::Down => {
                 self.device = DeviceSelector::Graphics;
+                self.clamp_selection();
             }
             KeyCode::Right => {
                 self.device = DeviceSelector::Disk;
@@ -126,9 +129,9 @@ impl App {
                 match key.code {
                     
                     KeyCode::Char('e') => {
-                        // if !self.gpus.is_empty() {
-                        //     self.selection = (self.selection + 1) % self.gpus.len();
-                        // }
+                        if !self.cpus.is_empty() {
+                            self.selection = (self.selection + 1) % self.cpus.len();
+                        }
                     }
                     _ => {}
                 }
@@ -152,18 +155,35 @@ impl App {
         }
     }
 
-    fn update_cpu(&mut self, mut sys : &mut System, elapsed : f64) {
+    fn detect_cpu(&mut self, sys : &System) {
+        for cpu in sys.cpus() {
+            let device = Cpu {
+                brand : cpu.vendor_id().to_string(),
+                usage : cpu.cpu_usage() as f64,
+                temp : 0.0,
+                frequency : cpu.frequency() as f64,
+                core_count : 0,
+                history : Vec::new(),
+            };
+            self.cpus.push(device);
+        }
+    }
+
+    fn update_cpu(&mut self, sys : &mut System, elapsed : f64) {
         sys.refresh_cpu_usage();
 
-        let usage = sys.global_cpu_usage() as f64;
-        self.cpu.usage = usage;
-        
-        self.cpu.history.push((elapsed, usage));
+        for cpu in self.cpus.iter_mut() {
 
-        const MAX_SAMPLES : usize = 60;
-
-        if self.cpu.history.len() > MAX_SAMPLES {
-            self.cpu.history.remove(0);
+            let usage = sys.global_cpu_usage() as f64;
+            cpu.usage = usage;
+            
+            cpu.history.push((elapsed, usage));
+    
+            const MAX_SAMPLES : usize = 60;
+    
+            if cpu.history.len() > MAX_SAMPLES {
+                cpu.history.remove(0);
+            }
         }
     }
 
@@ -191,6 +211,20 @@ impl App {
             if device.history.len() >= MAX_SAMPLES {
                 device.history.remove(0);
             }
+        }
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = match self.device {
+            DeviceSelector::Processor => self.cpus.len(),
+            DeviceSelector::Graphics => self.gpus.len(),
+            DeviceSelector::Disk => 0,
+        };
+
+        self.selection = if len == 0 {
+            0
+        } else {
+            self.selection.min(len - 1)
         }
     }
 
@@ -294,154 +328,175 @@ impl Widget for &App {
 
         //CPU SECTORS
 
-        let latest_time = self 
-                .cpu
-                .history
-                .last()
-                .map(|(time, _)|*time)
-                .unwrap_or(0.0);
-
-        let x_end = latest_time.max(60.0);
-        let x_start = x_end - 60.0;
-        let x_middle = (x_start + x_end) / 2.0;
-
-        let cpu_usage_dataset = Dataset::default()
-                .name("CPU USAGE")
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Magenta))
-                .data(&self.cpu.history);
-
-        let cpu_usage_chart = Chart::new(vec![cpu_usage_dataset])
-            .block(Block::bordered().title("CPU"))
-            .x_axis(
-                Axis::default()
-                    .title("Time(s)")
-                    .bounds([x_start, x_end])
-                    .labels([
-                        format!("{x_start:.0}s"),
-                        format!("{x_middle:.0}s"),
-                        format!("{x_end:.0}s"),
-                    ])
-                    .style(Color::White),
-            )
-            .y_axis(
-                Axis::default()
-                    .title("Usage (%)")
-                    .bounds([0.0, 100.0])
-                    .labels(["0%", "50%", "100%"])
-                    .style(Color::White),
-            );
-        cpu_usage_chart.render(cpu_block[0], buf);
-        
-        let cpu_name = Block::bordered();
-        cpu_name.render(cpu_info_vert[0], buf);
-
-        let cpu_temp = Block::bordered();
-        cpu_temp.render(cpu_info_vert[1], buf);
-
-        let cpu_pid = Block::bordered();
-        cpu_pid.render(cpu_info_vert[2], buf);
-
-        let mut text = String::new();
-        for gpu in self.gpus.iter() {
-            let name = &gpu.name;
-            text += name;
+        let cpu_index = self.selection.min(self.cpus.len().saturating_sub(1));
+        if let Some(selected_cpu) = self.cpus.get(cpu_index) {
+            let cpu_color = if selected_cpu.brand.to_uppercase().contains("AMD") {
+                Color::Red
+            } else if selected_cpu.brand.to_uppercase().contains("INTEL") {
+                Color::Blue
+            } else {
+                Color::White
+            };
+    
+            let latest_time = selected_cpu
+                    .history
+                    .last()
+                    .map(|(time, _)|*time)
+                    .unwrap_or(0.0);
+    
+            let x_end = latest_time.max(60.0);
+            let x_start = x_end - 60.0;
+            let x_middle = (x_start + x_end) / 2.0;
+    
+            let cpu_usage_dataset = Dataset::default()
+                    .name("CPU USAGE")
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(cpu_color))
+                    .data(&selected_cpu.history);
+    
+            let cpu_usage_chart = Chart::new(vec![cpu_usage_dataset])
+                .block(Block::bordered()
+                    .title("CPU")
+                    .style(match self.device {
+                        DeviceSelector::Processor => {cpu_color}
+                        _ => {Color::White}
+                    })
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Time(s)")
+                        .bounds([x_start, x_end])
+                        .labels([
+                            format!("{x_start:.0}s"),
+                            format!("{x_middle:.0}s"),
+                            format!("{x_end:.0}s"),
+                        ])
+                        .style(Color::White),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("Usage (%)")
+                        .bounds([0.0, 100.0])
+                        .labels(["0%", "50%", "100%"])
+                        .style(Color::White),
+                );
+            cpu_usage_chart.render(cpu_block[0], buf);
+            
+            let cpu_name = Block::bordered();
+            cpu_name.render(cpu_info_vert[0], buf);
+    
+            let cpu_temp = Block::bordered();
+            cpu_temp.render(cpu_info_vert[1], buf);
+    
+            let cpu_pid = Block::bordered();
+            cpu_pid.render(cpu_info_vert[2], buf);
+        } else {
+            let error_msg = Paragraph::new("No CPU detected")
+                .block(Block::bordered().title("CPU"));
+            error_msg.render(large_upper[0], buf);
         }
+
+
         //RAM SECTORS
-        let ram_usage = Paragraph::new(text);
+        let ram_usage = Block::bordered();
         ram_usage.render(ram_block[0], buf);
 
         let ram_info = Block::bordered();
         ram_info.render(ram_block[1], buf);
 
 
-
         //GPU SECTORS
-        let selected_gpu = &self.gpus[self.selection];
-        let gpu_color= if selected_gpu.name.contains("NVIDIA") {
-            Color::Green
-        } else if selected_gpu.name.contains("AMD") {
-            Color::Red
-        } else if selected_gpu.name.contains("INTEL") {
-            Color::Blue
-        } else {
-            Color::LightMagenta
-        };
-
-        let data = &selected_gpu.history;
-
-        let display_name = selected_gpu.name
-            .replace("NVIDIA GeForce ", "")
-            .replace("Laptop GPU", "")
-            .replace("AMD Radeon ", "")
-            .replace("Graphics", "");
-
-        let gpu_dataset_usage = Dataset::default()
-            .name(display_name)
-            .marker(Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(gpu_color))
-            .data(data);
-
-        let latest_time = selected_gpu
-                .history
-                .last()
-                .map(|(time, _)|*time)
-                .unwrap_or(0.0);
-
-        let x_end = latest_time.max(60.0);
-        let x_start = x_end - 60.0;
-        let x_middle = (x_start + x_end) / 2.0;
-
-        let gpu_usage_chart = Chart::new(vec![gpu_dataset_usage])
-            .block(Block::bordered()
-                .title("GPU")
+        let gpu_index = self.selection.min(self.gpus.len().saturating_sub(1));
+        if let Some(selected_gpu) = self.gpus.get(gpu_index) {
+            let gpu_color= if selected_gpu.name.to_uppercase().contains("NVIDIA") {
+                Color::Green
+            } else if selected_gpu.name.to_uppercase().contains("AMD") {
+                Color::Red
+            } else if selected_gpu.name.to_uppercase().contains("INTEL") {
+                Color::Blue
+            } else {
+                Color::LightMagenta
+            };
+    
+            let data = &selected_gpu.history;
+    
+            let display_name = selected_gpu.name
+                .replace("NVIDIA GeForce ", "")
+                .replace("Laptop GPU", "")
+                .replace("AMD Radeon ", "")
+                .replace("Graphics", "");
+    
+            let gpu_dataset_usage = Dataset::default()
+                .name(display_name)
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(gpu_color))
+                .data(data);
+    
+            let latest_time = selected_gpu
+                    .history
+                    .last()
+                    .map(|(time, _)|*time)
+                    .unwrap_or(0.0);
+    
+            let x_end = latest_time.max(60.0);
+            let x_start = x_end - 60.0;
+            let x_middle = (x_start + x_end) / 2.0;
+    
+            let gpu_usage_chart = Chart::new(vec![gpu_dataset_usage])
+                .block(Block::bordered()
+                    .title("GPU")
+                    .style(match self.device {
+                        DeviceSelector::Graphics => {gpu_color},
+                        _ => {Color::White}
+                    })    
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Time(s)")
+                        .bounds([x_start, x_end])
+                        .labels([
+                            format!("{x_start:.0}s"),
+                            format!("{x_middle:.0}s"),
+                            format!("{x_end:.0}s"),
+                        ])
+                        .style(Color::White),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("Usage (%)")
+                        .bounds([0.0, 100.0])
+                        .labels(["0%", "50%", "100%"])
+                        .style(Color::White),
+                );
+            gpu_usage_chart.render(gpu_block[0], buf);
+    
+            let temp = selected_gpu.temp;
+            let gauge_bound = Block::bordered()
+                .title("GPU Temp(C)")
                 .style(match self.device {
-                    DeviceSelector::Graphics => {gpu_color},
+                    DeviceSelector::Graphics => {gpu_color}
                     _ => {Color::White}
-                })    
-            )
-            .x_axis(
-                Axis::default()
-                    .title("Time(s)")
-                    .bounds([x_start, x_end])
-                    .labels([
-                        format!("{x_start:.0}s"),
-                        format!("{x_middle:.0}s"),
-                        format!("{x_end:.0}s"),
-                    ])
-                    .style(Color::White),
-            )
-            .y_axis(
-                Axis::default()
-                    .title("Usage (%)")
-                    .bounds([0.0, 100.0])
-                    .labels(["0%", "50%", "100%"])
-                    .style(Color::White),
-            );
-        gpu_usage_chart.render(gpu_block[0], buf);
-
-        let temp = selected_gpu.temp;
-        let gauge_bound = Block::bordered()
-            .title("GPU Temp(C)")
-            .style(match self.device {
-                DeviceSelector::Graphics => {gpu_color}
-                _ => {Color::White}
-            });
-            gauge_bound.render(gpu_info_vert[0], buf);
-
-        let gpu_temp = Gauge::default()
-            .gauge_style(gpu_color)
-            .ratio((temp as f64) / 100.0)
-            .label(temp.to_string());
-        gpu_temp.render(gpu_gauge_block[1], buf);
-
-        let gpu_usage = Block::bordered();
-        gpu_usage.render(gpu_info_vert[1], buf);
-
-        let gpu_name = Block::bordered();
-        gpu_name.render(gpu_info_vert[2], buf);
+                });
+                gauge_bound.render(gpu_info_vert[0], buf);
+    
+            let gpu_temp = Gauge::default()
+                .gauge_style(gpu_color)
+                .ratio((temp as f64) / 100.0)
+                .label(temp.to_string());
+            gpu_temp.render(gpu_gauge_block[1], buf);
+    
+            let gpu_usage = Block::bordered();
+            gpu_usage.render(gpu_info_vert[1], buf);
+    
+            let gpu_name = Block::bordered();
+            gpu_name.render(gpu_info_vert[2], buf);
+        } else {
+            let error_msg = Paragraph::new("No GPU detected")
+                .block(Block::bordered().title("GPU"));
+            error_msg.render(large_lower[0], buf);
+        }
 
 
         //DISK SECTORS

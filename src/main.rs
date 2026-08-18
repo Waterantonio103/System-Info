@@ -30,9 +30,11 @@ use ratatui::symbols::Marker;
 struct App {
     state : AppState,
     device : DeviceSelector,
+    system : Machine,
     cpus : Vec<Cpu>,
     gpus : Vec<Gpu>,
-    selection : usize,
+    cpu_selection : usize,
+    gpu_selection : usize,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -52,10 +54,16 @@ enum DeviceSelector {
 }
 
 #[derive(Debug, Default)]
+struct Machine {
+    name : Option<String>,
+    uptime : u64,
+}
+
+#[derive(Debug, Default)]
 struct Cpu {
+    thread : String,
     brand : String,
     usage : f64,
-    temp : f64,
     frequency : f64,
     core_count : usize,
     history : Vec<(f64, f64)>,
@@ -82,6 +90,7 @@ impl App {
         let started_at = Instant::now();
         let mut last_update = Instant::now();
 
+        self.detect_sys(&sys);
         self.detect_cpu(&sys);
         self.detect_gpus(&smi);
 
@@ -107,62 +116,51 @@ impl App {
     }
 
     fn handle_key_events(&mut self, key : KeyEvent) {
-        match key.code {
-            KeyCode::Up => {
+        match (&self.device, key.code) {
+            (DeviceSelector::Processor, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                if !self.cpus.is_empty() {
+                    self.cpu_selection = (self.cpu_selection + 1) % self.cpus.len();
+                }
+            }
+
+            (DeviceSelector::Graphics, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                if !self.gpus.is_empty() {
+                    self.gpu_selection = (self.gpu_selection + 1) % self.gpus.len();
+                }
+            }
+
+            (_, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Processor;
-                self.clamp_selection();
-            },
-            KeyCode::Down => {
+            }
+
+            (_, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Graphics;
-                self.clamp_selection();
             }
-            KeyCode::Right => {
-                self.device = DeviceSelector::Disk;
-            }
-            KeyCode::Char('q') => {
+
+            (_, KeyCode::Char('q')) => {
                 self.state = AppState::Quitting;
-            },
+            }
+
             _ => {}
         }
-        match self.device {
-            DeviceSelector::Processor if key.kind == event::KeyEventKind::Press => 
-                match key.code {
-                    
-                    KeyCode::Char('e') => {
-                        if !self.cpus.is_empty() {
-                            self.selection = (self.selection + 1) % self.cpus.len();
-                        }
-                    }
-                    _ => {}
-                }
-            ,
-            DeviceSelector::Graphics if key.kind == event::KeyEventKind::Press => 
-                match key.code {
-                    KeyCode::Char('e') => {
-                        if !self.gpus.is_empty() {
-                            self.selection = (self.selection + 1) % self.gpus.len();
-                        }
-                    }
-                    _ => {}
-                }
-            ,
-            DeviceSelector::Disk if key.kind == event::KeyEventKind::Press => 
-                match key.code {
-                    
-                    _ => {}
-                }
-            _ => {}
-        }
+    }
+
+    fn detect_sys(&mut self, sys : &System) {
+        let system = Machine {
+            name : System::name(),
+            uptime : System::boot_time(),
+        };
+        self.system = system;
     }
 
     fn detect_cpu(&mut self, sys : &System) {
         for cpu in sys.cpus() {
             let device = Cpu {
+                thread : cpu.name().to_string(),
                 brand : cpu.vendor_id().to_string(),
                 usage : cpu.cpu_usage() as f64,
-                temp : 0.0,
                 frequency : cpu.frequency() as f64,
-                core_count : 0,
+                core_count : match System::physical_core_count() {Some(count) => count, None => 0},
                 history : Vec::new(),
             };
             self.cpus.push(device);
@@ -214,19 +212,6 @@ impl App {
         }
     }
 
-    fn clamp_selection(&mut self) {
-        let len = match self.device {
-            DeviceSelector::Processor => self.cpus.len(),
-            DeviceSelector::Graphics => self.gpus.len(),
-            DeviceSelector::Disk => 0,
-        };
-
-        self.selection = if len == 0 {
-            0
-        } else {
-            self.selection.min(len - 1)
-        }
-    }
 
 }
 
@@ -328,7 +313,7 @@ impl Widget for &App {
 
         //CPU SECTORS
 
-        let cpu_index = self.selection.min(self.cpus.len().saturating_sub(1));
+        let cpu_index = self.cpu_selection.min(self.cpus.len().saturating_sub(1));
         if let Some(selected_cpu) = self.cpus.get(cpu_index) {
             let cpu_color = if selected_cpu.brand.to_uppercase().contains("AMD") {
                 Color::Red
@@ -349,7 +334,7 @@ impl Widget for &App {
             let x_middle = (x_start + x_end) / 2.0;
     
             let cpu_usage_dataset = Dataset::default()
-                    .name("CPU USAGE")
+                    .name(selected_cpu.thread.as_str())
                     .marker(Marker::Braille)
                     .graph_type(GraphType::Line)
                     .style(Style::default().fg(cpu_color))
@@ -383,8 +368,12 @@ impl Widget for &App {
                 );
             cpu_usage_chart.render(cpu_block[0], buf);
             
-            let cpu_name = Block::bordered();
-            cpu_name.render(cpu_info_vert[0], buf);
+            let sys_name = &self.system.name.as_deref().unwrap_or("Unknown OS").to_string();
+            let sys_uptime = &self.system.uptime.to_string();
+            let text = format!("System Name: {}\nSystem Uptime: {}", sys_name, sys_uptime);
+            let sys_info = Paragraph::new(text)
+                .block(Block::bordered().title("System Info"));
+            sys_info.render(cpu_info_vert[0], buf);
     
             let cpu_temp = Block::bordered();
             cpu_temp.render(cpu_info_vert[1], buf);
@@ -407,7 +396,7 @@ impl Widget for &App {
 
 
         //GPU SECTORS
-        let gpu_index = self.selection.min(self.gpus.len().saturating_sub(1));
+        let gpu_index = self.gpu_selection.min(self.gpus.len().saturating_sub(1));
         if let Some(selected_gpu) = self.gpus.get(gpu_index) {
             let gpu_color= if selected_gpu.name.to_uppercase().contains("NVIDIA") {
                 Color::Green

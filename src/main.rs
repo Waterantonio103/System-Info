@@ -48,6 +48,7 @@ enum AppState {
 #[derive(Debug, Default)]
 enum DeviceSelector {
     #[default]
+    None,
     Processor,
     Graphics,
     Disk,
@@ -90,7 +91,7 @@ impl App {
         let started_at = Instant::now();
         let mut last_update = Instant::now();
 
-        self.detect_sys(&sys);
+        self.update_sys(&sys);
         self.detect_cpu(&sys);
         self.detect_gpus(&smi);
 
@@ -98,6 +99,7 @@ impl App {
 
             if last_update.elapsed() >= Duration::from_secs(1) {
                 let elapsed = started_at.elapsed().as_secs_f64();
+                self.update_sys(&sys);
                 self.update_cpu(&mut sys, elapsed);
                 self.update_gpus(&smi, elapsed);
                 last_update = Instant::now();
@@ -141,16 +143,49 @@ impl App {
                 self.state = AppState::Quitting;
             }
 
+            (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
             _ => {}
         }
     }
 
-    fn detect_sys(&mut self, sys : &System) {
+    fn update_sys(&mut self, sys : &System) {
         let system = Machine {
             name : System::name(),
-            uptime : System::boot_time(),
+            uptime : System::uptime(),
         };
         self.system = system;
+    }
+
+    fn time_fmt(&self, seconds : u64) -> String {
+        const DAY_IN_SECS : u64 = 86400;
+        const HOUR_IN_SECS : u64 = 3600;
+        const MIN_IN_SECS : u64 = 60;
+        
+        let days = seconds / DAY_IN_SECS;
+        let hours = seconds / HOUR_IN_SECS;
+        let minutes = seconds / MIN_IN_SECS;
+
+        let clock = if days > 0 {
+            let remaining_hrs = seconds % DAY_IN_SECS;
+            let hours = remaining_hrs / HOUR_IN_SECS;
+            let remaining_mins = remaining_hrs % HOUR_IN_SECS;
+            let mins = remaining_mins / MIN_IN_SECS;
+            let secs = remaining_mins % MIN_IN_SECS;
+            format!("{:02}d{:02}h{:02}m{:02}s",days,hours,mins,secs)
+        } else if hours > 0 {
+            let remaining_mins = seconds % HOUR_IN_SECS;
+            let mins = remaining_mins / MIN_IN_SECS;
+            let secs = remaining_mins % MIN_IN_SECS;
+            format!("{:02}h{:02}m{:02}s",hours,mins,secs)
+        } else {
+            let secs = seconds % MIN_IN_SECS;
+            format!("{:02}m{:02}s",minutes,secs)
+        };
+        
+        clock
     }
 
     fn detect_cpu(&mut self, sys : &System) {
@@ -369,10 +404,17 @@ impl Widget for &App {
             cpu_usage_chart.render(cpu_block[0], buf);
             
             let sys_name = &self.system.name.as_deref().unwrap_or("Unknown OS").to_string();
-            let sys_uptime = &self.system.uptime.to_string();
-            let text = format!("System Name: {}\nSystem Uptime: {}", sys_name, sys_uptime);
+            let sys_uptime = self.time_fmt(self.system.uptime);
+            let text = format!("OS: {}\nUptime: {}", sys_name, sys_uptime);
             let sys_info = Paragraph::new(text)
-                .block(Block::bordered().title("System Info"));
+                .block(
+                    Block::bordered()
+                    .title("System Info")
+                    .style(match self.device {
+                        DeviceSelector::Processor => {cpu_color},
+                        _ => {Color::White}
+                    })
+                );
             sys_info.render(cpu_info_vert[0], buf);
     
             let cpu_temp = Block::bordered();

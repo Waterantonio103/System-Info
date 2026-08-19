@@ -56,6 +56,9 @@ enum DeviceSelector {
 
 #[derive(Debug, Default)]
 struct Machine {
+    os : Option<String>,
+    version : Option<String>,
+    kernel : Option<String>,
     name : Option<String>,
     uptime : u64,
 }
@@ -94,6 +97,14 @@ impl App {
         self.update_sys(&sys);
         self.detect_cpu(&sys);
         self.detect_gpus(&smi);
+
+        self.system = Machine {
+            os : System::name(),
+            version : System::os_version(),
+            kernel : System::kernel_version(),
+            name : System::host_name(),
+            uptime : System::uptime(),
+        };
 
         while self.state != AppState::Quitting {
 
@@ -152,42 +163,10 @@ impl App {
     }
 
     fn update_sys(&mut self, sys : &System) {
-        let system = Machine {
-            name : System::name(),
-            uptime : System::uptime(),
-        };
-        self.system = system;
+        self.system.uptime = System::uptime();
     }
 
-    fn time_fmt(&self, seconds : u64) -> String {
-        const DAY_IN_SECS : u64 = 86400;
-        const HOUR_IN_SECS : u64 = 3600;
-        const MIN_IN_SECS : u64 = 60;
-        
-        let days = seconds / DAY_IN_SECS;
-        let hours = seconds / HOUR_IN_SECS;
-        let minutes = seconds / MIN_IN_SECS;
-
-        let clock = if days > 0 {
-            let remaining_hrs = seconds % DAY_IN_SECS;
-            let hours = remaining_hrs / HOUR_IN_SECS;
-            let remaining_mins = remaining_hrs % HOUR_IN_SECS;
-            let mins = remaining_mins / MIN_IN_SECS;
-            let secs = remaining_mins % MIN_IN_SECS;
-            format!("{:02}d{:02}h{:02}m{:02}s",days,hours,mins,secs)
-        } else if hours > 0 {
-            let remaining_mins = seconds % HOUR_IN_SECS;
-            let mins = remaining_mins / MIN_IN_SECS;
-            let secs = remaining_mins % MIN_IN_SECS;
-            format!("{:02}h{:02}m{:02}s",hours,mins,secs)
-        } else {
-            let secs = seconds % MIN_IN_SECS;
-            format!("{:02}m{:02}s",minutes,secs)
-        };
-        
-        clock
-    }
-
+    
     fn detect_cpu(&mut self, sys : &System) {
         for cpu in sys.cpus() {
             let device = Cpu {
@@ -213,13 +192,13 @@ impl App {
             cpu.history.push((elapsed, usage));
     
             const MAX_SAMPLES : usize = 60;
-    
+            
             if cpu.history.len() > MAX_SAMPLES {
                 cpu.history.remove(0);
             }
         }
     }
-
+    
     fn detect_gpus(&mut self, smi : &AllSmi) {
         for gpu in smi.get_gpu_info() {
             let device = Gpu {
@@ -236,17 +215,45 @@ impl App {
         const MAX_SAMPLES :usize = 60;
         let fresh_vals = smi.get_gpu_info();
         for (device, fresh) in self.gpus.iter_mut().zip(fresh_vals.iter()) {
-
+            
             device.usage = fresh.utilization;
             device.temp = fresh.temperature;
             device.history.push((elapsed, device.usage));
-
+            
             if device.history.len() >= MAX_SAMPLES {
                 device.history.remove(0);
             }
         }
     }
-
+    
+    fn time_fmt(&self, seconds : u64) -> String {
+        const DAY_IN_SECS : u64 = 86400;
+        const HOUR_IN_SECS : u64 = 3600;
+        const MIN_IN_SECS : u64 = 60;
+        
+        let days = seconds / DAY_IN_SECS;
+        let hours = seconds / HOUR_IN_SECS;
+        let minutes = seconds / MIN_IN_SECS;
+    
+        let clock = if days > 0 {
+            let remaining_hrs = seconds % DAY_IN_SECS;
+            let hours = remaining_hrs / HOUR_IN_SECS;
+            let remaining_mins = remaining_hrs % HOUR_IN_SECS;
+            let mins = remaining_mins / MIN_IN_SECS;
+            let secs = remaining_mins % MIN_IN_SECS;
+            format!("{:02}d{:02}h{:02}m{:02}s",days,hours,mins,secs)
+        } else if hours > 0 {
+            let remaining_mins = seconds % HOUR_IN_SECS;
+            let mins = remaining_mins / MIN_IN_SECS;
+            let secs = remaining_mins % MIN_IN_SECS;
+            format!("{:02}h{:02}m{:02}s",hours,mins,secs)
+        } else {
+            let secs = seconds % MIN_IN_SECS;
+            format!("{:02}m{:02}s",minutes,secs)
+        };
+        
+        clock
+    }
 
 }
 
@@ -403,9 +410,24 @@ impl Widget for &App {
                 );
             cpu_usage_chart.render(cpu_block[0], buf);
             
-            let sys_name = &self.system.name.as_deref().unwrap_or("Unknown OS").to_string();
+            let sys_name = &self.system.os.as_deref().unwrap_or("Unknown OS").to_string();
+            let sys_vers_raw = &self.system.version.as_deref().unwrap_or("Unknown OS Version").to_string();
+            let sys_vers = sys_vers_raw
+                .split_once("(")
+                .map(|(before, _)|before)
+                .unwrap_or(sys_vers_raw)
+                .to_string()
+                .replace(['(', ')'], "");
+            let sys_kernel_raw = &self.system.version.as_deref().unwrap_or("Unknown Kernel").to_string();
+            let sys_kernel = sys_kernel_raw
+                .split_once("(")
+                .map(|(_, after)|after)
+                .unwrap_or(sys_kernel_raw)
+                .to_string()
+                .replace(['(', ')'], "");
+            let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
             let sys_uptime = self.time_fmt(self.system.uptime);
-            let text = format!("OS: {}\nUptime: {}", sys_name, sys_uptime);
+            let text = format!("OS: {}\nVersion: {}\nKernel: {}\nHost: {}\nUptime: {}",sys_name,sys_vers,sys_kernel,sys_host,sys_uptime);
             let sys_info = Paragraph::new(text)
                 .block(
                     Block::bordered()

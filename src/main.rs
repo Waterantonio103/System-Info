@@ -9,7 +9,7 @@ use std::{
 };
 
 use sysinfo::{
-    Components, Disks, Networks, System,
+    Components, Cpu, Disks, Networks, System,
 };
 
 use all_smi::{AllSmi, Result as SmiResult};
@@ -26,12 +26,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Padding, Paragraph, Widget, Axis, Chart, GraphType, Dataset};
 use ratatui::symbols::Marker;
 
+use chrono::{DateTime, Local};
+
 #[derive(Debug, Default)]
 struct App {
     state : AppState,
     device : DeviceSelector,
     system : Machine,
-    cpus : Vec<Cpu>,
+    cpus : Vec<Processor>,
     gpus : Vec<Gpu>,
     cpu_selection : usize,
     gpu_selection : usize,
@@ -61,16 +63,18 @@ struct Machine {
     kernel : Option<String>,
     name : Option<String>,
     uptime : u64,
+    boot : u64,
 }
 
 #[derive(Debug, Default)]
-struct Cpu {
+struct Processor {
     thread : String,
     brand : String,
     usage : f64,
     frequency : f64,
     core_count : usize,
     history : Vec<(f64, f64)>,
+    freq_hist : Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Default)]
@@ -104,6 +108,7 @@ impl App {
             kernel : System::kernel_version(),
             name : System::host_name(),
             uptime : System::uptime(),
+            boot : System::boot_time(),
         };
 
         while self.state != AppState::Quitting {
@@ -111,7 +116,7 @@ impl App {
             if last_update.elapsed() >= Duration::from_secs(1) {
                 let elapsed = started_at.elapsed().as_secs_f64();
                 self.update_sys(&sys);
-                self.update_cpu(&mut sys, elapsed);
+                self.update_cpu(&mut sys,elapsed);
                 self.update_gpus(&smi, elapsed);
                 last_update = Instant::now();
             }
@@ -169,32 +174,36 @@ impl App {
     
     fn detect_cpu(&mut self, sys : &System) {
         for cpu in sys.cpus() {
-            let device = Cpu {
+            let device = Processor {
                 thread : cpu.name().to_string(),
                 brand : cpu.vendor_id().to_string(),
                 usage : cpu.cpu_usage() as f64,
                 frequency : cpu.frequency() as f64,
                 core_count : match System::physical_core_count() {Some(count) => count, None => 0},
                 history : Vec::new(),
+                freq_hist : Vec::new(),
             };
             self.cpus.push(device);
         }
     }
 
     fn update_cpu(&mut self, sys : &mut System, elapsed : f64) {
-        sys.refresh_cpu_usage();
+        sys.refresh_cpu_all();
 
-        for cpu in self.cpus.iter_mut() {
+        for (processor, cpu) in self.cpus.iter_mut().zip(sys.cpus().iter()) {
 
-            let usage = sys.global_cpu_usage() as f64;
-            cpu.usage = usage;
+            let usage = cpu.cpu_usage() as f64;
+            processor.usage = usage;
+            let freq = cpu.frequency() as f64 / 1000.0;
+            processor.frequency = freq;
             
-            cpu.history.push((elapsed, usage));
+            processor.history.push((elapsed, usage));
+            processor.freq_hist.push((elapsed, freq));
     
             const MAX_SAMPLES : usize = 60;
             
-            if cpu.history.len() > MAX_SAMPLES {
-                cpu.history.remove(0);
+            if processor.history.len() > MAX_SAMPLES {
+                processor.history.remove(0);
             }
         }
     }
@@ -253,6 +262,14 @@ impl App {
         };
         
         clock
+    }
+
+    fn date_fmt(&self, boot : u64) -> String {
+        let boot_date = DateTime::from_timestamp(boot as i64, 0)
+            .unwrap()
+            .with_timezone(&Local);
+
+        boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
     }
 
 }
@@ -427,7 +444,8 @@ impl Widget for &App {
                 .replace(['(', ')'], "");
             let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
             let sys_uptime = self.time_fmt(self.system.uptime);
-            let text = format!("OS: {}\nVersion: {}\nKernel: {}\nHost: {}\nUptime: {}",sys_name,sys_vers,sys_kernel,sys_host,sys_uptime);
+            let sys_boot = self.date_fmt(self.system.boot);
+            let text = format!("OS: {}\nVersion: {}\nKernel: {}\nHost: {}\nUptime: {}\nBooted: {}",sys_name,sys_vers,sys_kernel,sys_host,sys_uptime,sys_boot);
             let sys_info = Paragraph::new(text)
                 .block(
                     Block::bordered()
@@ -438,9 +456,56 @@ impl Widget for &App {
                     })
                 );
             sys_info.render(cpu_info_vert[0], buf);
-    
-            let cpu_temp = Block::bordered();
-            cpu_temp.render(cpu_info_vert[1], buf);
+
+            let latest_time = selected_cpu
+                    .freq_hist
+                    .last()
+                    .map(|(time, _)|*time)
+                    .unwrap_or(0.0);
+
+            let x_end = latest_time.max(60.0);
+            let x_start = x_end - 60.0;
+            let x_middle = (x_start + x_end) / 2.0;
+
+            let max_bound = selected_cpu.freq_hist.iter().map(|(_, freq)| *freq).reduce(f64::max).unwrap_or(0.0) + 0.5;
+            let mid_bound = max_bound / 2.0;
+            let max_label = format!("{max_bound:.1}GHz");
+            let mid_label = format!("{mid_bound:.1}GHz");
+
+            let cpu_freq_dataset = Dataset::default()
+                    .name(selected_cpu.thread.as_str())
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(cpu_color))
+                    .data(&selected_cpu.freq_hist);
+
+            let cpu_freq = Chart::new(vec![cpu_freq_dataset])
+                .block(Block::bordered()
+                    .title("FREQUENCY")
+                    .style(match self.device {
+                        DeviceSelector::Processor => {cpu_color}
+                        _ => {Color::White}
+                    })
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Time(s)")
+                        .bounds([x_start, x_end])
+                        .labels([
+                            format!("{x_start:.0}s"),
+                            format!("{x_middle:.0}s"),
+                            format!("{x_end:.0}s"),
+                        ])
+                        .style(Color::White),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("Frequency (GHz)")
+                        .bounds([0.0, max_bound])
+                        .labels(["0GHz", mid_label.as_str(), max_label.as_str()])
+                        .style(Color::White),
+                );
+            cpu_freq.render(cpu_info_vert[1], buf);
     
             let cpu_pid = Block::bordered();
             cpu_pid.render(cpu_info_vert[2], buf);

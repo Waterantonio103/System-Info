@@ -64,6 +64,7 @@ struct Machine {
     name : Option<String>,
     uptime : u64,
     boot : u64,
+    core_count : usize,
 }
 
 #[derive(Debug, Default)]
@@ -72,7 +73,6 @@ struct Processor {
     brand : String,
     usage : f64,
     frequency : f64,
-    core_count : usize,
     history : Vec<(f64, f64)>,
     freq_hist : Vec<(f64, f64)>,
 }
@@ -99,7 +99,7 @@ impl App {
         let mut last_update = Instant::now();
 
         self.update_sys(&sys);
-        self.detect_cpu(&sys);
+        self.detect_cpus(&sys);
         self.detect_gpus(&smi);
 
         self.system = Machine {
@@ -109,6 +109,7 @@ impl App {
             name : System::host_name(),
             uptime : System::uptime(),
             boot : System::boot_time(),
+            core_count : match System::physical_core_count() {Some(count) => {count}, None => {0}},
         };
 
         while self.state != AppState::Quitting {
@@ -116,7 +117,7 @@ impl App {
             if last_update.elapsed() >= Duration::from_secs(1) {
                 let elapsed = started_at.elapsed().as_secs_f64();
                 self.update_sys(&sys);
-                self.update_cpu(&mut sys,elapsed);
+                self.update_cpus(&mut sys,elapsed);
                 self.update_gpus(&smi, elapsed);
                 last_update = Instant::now();
             }
@@ -171,15 +172,24 @@ impl App {
         self.system.uptime = System::uptime();
     }
 
-    
-    fn detect_cpu(&mut self, sys : &System) {
+    fn detect_cpus(&mut self, sys : &System) {
+        if let Some(cpu) = sys.cpus().first() {
+            let global_cpu = Processor {
+                thread : String::new(),
+                brand : cpu.vendor_id().to_string(),
+                usage : sys.global_cpu_usage() as f64,
+                frequency : cpu.frequency() as f64,
+                history : Vec::new(),
+                freq_hist : Vec::new(),
+            };
+            self.cpus.push(global_cpu);
+        }
         for cpu in sys.cpus() {
             let device = Processor {
                 thread : cpu.name().to_string(),
                 brand : cpu.vendor_id().to_string(),
                 usage : cpu.cpu_usage() as f64,
                 frequency : cpu.frequency() as f64,
-                core_count : match System::physical_core_count() {Some(count) => count, None => 0},
                 history : Vec::new(),
                 freq_hist : Vec::new(),
             };
@@ -187,23 +197,53 @@ impl App {
         }
     }
 
-    fn update_cpu(&mut self, sys : &mut System, elapsed : f64) {
+    fn update_cpus(&mut self, sys : &mut System, elapsed : f64) {
+        const MAX_SAMPLES: usize = 60;
         sys.refresh_cpu_all();
 
-        for (processor, cpu) in self.cpus.iter_mut().zip(sys.cpus().iter()) {
+        let global_usage = sys.global_cpu_usage() as f64;
+        let mut frequency_sum = 0.0;
+        let mut frequency_count = 0;
 
+        for (processor, cpu) in self.cpus.iter_mut().skip(1).zip(sys.cpus()) {
             let usage = cpu.cpu_usage() as f64;
+            let frequency = cpu.frequency() as f64 / 1000.0; // MHz -> GHz
+
             processor.usage = usage;
-            let freq = cpu.frequency() as f64 / 1000.0;
-            processor.frequency = freq;
-            
+            processor.frequency = frequency;
             processor.history.push((elapsed, usage));
-            processor.freq_hist.push((elapsed, freq));
-    
-            const MAX_SAMPLES : usize = 60;
-            
+            processor.freq_hist.push((elapsed, frequency));
+
+            frequency_sum += frequency;
+            frequency_count += 1;
+
             if processor.history.len() > MAX_SAMPLES {
                 processor.history.remove(0);
+            }
+
+            if processor.freq_hist.len() > MAX_SAMPLES {
+                processor.freq_hist.remove(0);
+            }
+        }
+
+        let global_frequency = if frequency_count > 0 {
+            frequency_sum / frequency_count as f64
+        } else {
+            0.0
+        };
+
+        if let Some(global_cpu) = self.cpus.first_mut() {
+            global_cpu.usage = global_usage;
+            global_cpu.frequency = global_frequency;
+            global_cpu.history.push((elapsed, global_usage));
+            global_cpu.freq_hist.push((elapsed, global_frequency));
+
+            if global_cpu.history.len() > MAX_SAMPLES {
+                global_cpu.history.remove(0);
+            }
+
+            if global_cpu.freq_hist.len() > MAX_SAMPLES {
+                global_cpu.freq_hist.remove(0);
             }
         }
     }
@@ -392,8 +432,13 @@ impl Widget for &App {
             let x_start = x_end - 60.0;
             let x_middle = (x_start + x_end) / 2.0;
     
+            let cpu_name = if self.cpu_selection == 0 {
+                "GLOBAL CPU"
+            } else {
+                selected_cpu.thread.as_str()
+            };
             let cpu_usage_dataset = Dataset::default()
-                    .name(selected_cpu.thread.as_str())
+                    .name(cpu_name)
                     .marker(Marker::Braille)
                     .graph_type(GraphType::Line)
                     .style(Style::default().fg(cpu_color))
@@ -500,7 +545,6 @@ impl Widget for &App {
                 )
                 .y_axis(
                     Axis::default()
-                        .title("Frequency (GHz)")
                         .bounds([0.0, max_bound])
                         .labels(["0GHz", mid_label.as_str(), max_label.as_str()])
                         .style(Color::White),

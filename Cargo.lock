@@ -66,8 +66,7 @@ dependencies = [
 [[package]]
 name = "all-smi"
 version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d36a62bb60c2df92407fc2ba21b5d0555d84083fe795ea18c505b0d4857af1f"
+source = "git+https://github.com/Waterantonio103/all-smi-0.25-patched.git?branch=quiet-stderr-warnings-0.25.0#8c10560d4552967798a871c6ba864843a6ee5d2a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2383,7 +2382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20e9cb5c980bdf72b4b5e8dc3efb186749ceaa9b527b91ec388c6e1d95b58012"
 dependencies = [
  "libdrm_amdgpu_sys",
- "nix 0.29.0",
+ "nix 0.31.3",
  "num_enum",
 ]
 
@@ -4863,7 +4862,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

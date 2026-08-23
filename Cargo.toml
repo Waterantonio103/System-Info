@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-all-smi = "0.25.0"
+all-smi = { git = "https://github.com/Waterantonio103/all-smi-0.25-patched.git", branch = "quiet-stderr-warnings-0.25.0" }
 chrono = "0.4.45"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

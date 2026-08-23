@@ -1,32 +1,21 @@
 #![allow(unused)]
 
 use std::{
-    time::{
-        Duration,
-        Instant,
-    },
-    thread
-};
-
-use sysinfo::{
-    Components, Cpu, Disks, Networks, System,
+    fmt::format, thread, time::{Duration, Instant},
 };
 
 use all_smi::{AllSmi, Result as SmiResult};
-
-use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use ratatui::{DefaultTerminal};
-use ratatui::buffer::Buffer;
-use ratatui::layout::Direction::{Horizontal, Vertical};
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::palette::tailwind;
-use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Padding, Paragraph, Widget, Axis, Chart, GraphType, Dataset};
-use ratatui::symbols::Marker;
-
 use chrono::{DateTime, Local};
+use color_eyre::{Result, owo_colors::style};
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use ratatui::{
+    DefaultTerminal, Frame, layout::{
+        Alignment, Constraint, Direction::{Horizontal, Vertical}, Layout, Rect,
+    }, style::{Color, Modifier, Style, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
+        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph,
+    },
+};
+use sysinfo::{Components, Cpu, Disks, Networks, System, ProcessesToUpdate};
 
 #[derive(Debug, Default)]
 struct App {
@@ -37,6 +26,9 @@ struct App {
     gpus : Vec<Gpu>,
     cpu_selection : usize,
     gpu_selection : usize,
+    list_state : ListState,
+    processes : Vec<Process>,
+    mem_offset : usize,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -47,13 +39,14 @@ enum AppState {
     Quitting,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 enum DeviceSelector {
     #[default]
     None,
     Processor,
     Graphics,
     Disk,
+    Processes,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +76,12 @@ struct Gpu {
     usage : f64,
     temp : u32,
     history : Vec<(f64, f64)>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Process {
+    name : String,
+    memory : f64,
 }
 
 fn main() -> Result<()> {
@@ -119,10 +118,11 @@ impl App {
                 self.update_sys(&sys);
                 self.update_cpus(&mut sys,elapsed);
                 self.update_gpus(&smi, elapsed);
+                self.processes(&mut sys);
                 last_update = Instant::now();
             }
             
-            terminal.draw(|frame| frame.render_widget(&*self, frame.area()))?;
+            terminal.draw(|frame| self.render(frame))?;
 
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
@@ -148,12 +148,32 @@ impl App {
                 }
             }
 
+            (DeviceSelector::Processes, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
+                self.list_state.select_previous();
+
+                if let Some(index) = self.list_state.selected() {
+                    self.mem_offset = index + 1
+                }
+            }
+
+            (DeviceSelector::Processes, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
+                self.list_state.select_next();
+
+                if let Some(index) = self.list_state.selected() {
+                    self.mem_offset = index + 1
+                }
+            }
+
             (_, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Processor;
             }
 
             (_, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Graphics;
+            }
+
+            (_, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Processes;
             }
 
             (_, KeyCode::Char('q')) => {
@@ -274,7 +294,24 @@ impl App {
             }
         }
     }
-    
+
+    fn processes(&mut self, sys : &mut System) {
+        self.processes.clear();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+
+        for (pid, process) in sys.processes() {
+            let name = process.name().to_str().unwrap_or("unknown process name");
+            let mem = process.memory() as f64 / 1000000000.0;
+            // let read = process.disk_usage().read_bytes.to_string();
+            // let write = process.disk_usage().written_bytes.to_string();
+            self.processes.push(Process { name: name.to_string(), memory: mem });
+        }
+
+        self.processes.sort_by(|a, b| {
+            b.memory.partial_cmp(&a.memory).unwrap()
+        });
+    }
+
     fn time_fmt(&self, seconds : u64) -> String {
         const DAY_IN_SECS : u64 = 86400;
         const HOUR_IN_SECS : u64 = 3600;
@@ -314,9 +351,9 @@ impl App {
 
 }
 
-impl Widget for &App {
-    fn render(self, area : Rect, buf : &mut Buffer) {
-        use Constraint::{Length, Min, Ratio};
+impl App {
+    fn render(&mut self, frame : &mut Frame) {
+        let area = frame.area();
 
         let largest = Layout::default()
             .direction(Vertical)
@@ -470,7 +507,7 @@ impl Widget for &App {
                         .labels(["0%", "50%", "100%"])
                         .style(Color::White),
                 );
-            cpu_usage_chart.render(cpu_block[0], buf);
+            frame.render_widget(cpu_usage_chart, cpu_block[0]);
             
             let sys_name = &self.system.os.as_deref().unwrap_or("Unknown OS").to_string();
             let sys_vers_raw = &self.system.version.as_deref().unwrap_or("Unknown OS Version").to_string();
@@ -500,7 +537,7 @@ impl Widget for &App {
                         _ => {Color::White}
                     })
                 );
-            sys_info.render(cpu_info_vert[0], buf);
+            frame.render_widget(sys_info, cpu_info_vert[0]);
 
             let latest_time = selected_cpu
                     .freq_hist
@@ -549,23 +586,23 @@ impl Widget for &App {
                         .labels(["0GHz", mid_label.as_str(), max_label.as_str()])
                         .style(Color::White),
                 );
-            cpu_freq.render(cpu_info_vert[1], buf);
+            frame.render_widget(cpu_freq, cpu_info_vert[1]);
     
             let cpu_pid = Block::bordered();
-            cpu_pid.render(cpu_info_vert[2], buf);
+            frame.render_widget(cpu_pid, cpu_info_vert[2]);
         } else {
             let error_msg = Paragraph::new("No CPU detected")
                 .block(Block::bordered().title("CPU"));
-            error_msg.render(large_upper[0], buf);
+            frame.render_widget(error_msg, large_upper[0]);
         }
 
 
         //RAM SECTORS
         let ram_usage = Block::bordered();
-        ram_usage.render(ram_block[0], buf);
+        frame.render_widget(ram_usage, ram_block[0]);
 
         let ram_info = Block::bordered();
-        ram_info.render(ram_block[1], buf);
+        frame.render_widget(ram_info, ram_block[1]);
 
 
         //GPU SECTORS
@@ -632,7 +669,7 @@ impl Widget for &App {
                         .labels(["0%", "50%", "100%"])
                         .style(Color::White),
                 );
-            gpu_usage_chart.render(gpu_block[0], buf);
+            frame.render_widget(gpu_usage_chart, gpu_block[0]);
     
             let temp = selected_gpu.temp;
             let gauge_bound = Block::bordered()
@@ -641,28 +678,66 @@ impl Widget for &App {
                     DeviceSelector::Graphics => {gpu_color}
                     _ => {Color::White}
                 });
-                gauge_bound.render(gpu_info_vert[0], buf);
+                frame.render_widget(gauge_bound, gpu_info_vert[0]);
     
             let gpu_temp = Gauge::default()
                 .gauge_style(gpu_color)
                 .ratio((temp as f64) / 100.0)
                 .label(temp.to_string());
-            gpu_temp.render(gpu_gauge_block[1], buf);
+            frame.render_widget(gpu_temp, gpu_gauge_block[1]);
     
             let gpu_usage = Block::bordered();
-            gpu_usage.render(gpu_info_vert[1], buf);
+            frame.render_widget(gpu_usage, gpu_info_vert[1]);
     
             let gpu_name = Block::bordered();
-            gpu_name.render(gpu_info_vert[2], buf);
+            frame.render_widget(gpu_name, gpu_info_vert[2]);
         } else {
             let error_msg = Paragraph::new("No GPU detected")
                 .block(Block::bordered().title("GPU"));
-            error_msg.render(large_lower[0], buf);
+            frame.render_widget(error_msg, large_lower[0]);
         }
 
 
-        //DISK SECTORS
-        let block6 = Block::bordered();
-        block6.render(large_lower[1], buf);
+        //PROCESSES SECTORS
+        let width = large_lower[1].width as usize;
+        let processes: Vec<ListItem> = self.processes
+            .iter()
+            .map(|process| {
+                let usage = format!("{:.1}GB", process.memory);
+                let name = process.name.clone();
+
+                let spaces = if self.mem_offset == 0 {
+                    width.saturating_sub(name.len() + usage.len() + 3)
+                } else {
+                    width.saturating_sub(name.len() + usage.len() + 5)
+                };
+
+                let line = Line::from(vec![
+                    Span::raw(name),
+                    Span::raw(" ".repeat(spaces)),
+                    Span::raw(usage),
+                ]);
+
+                ListItem::new(line)
+            })
+            .collect();
+
+        let list = if processes.is_empty() {
+            vec![ListItem::new(Span::raw("Attempting to retrieve processes...".to_string()))]
+        } else {
+            processes
+        };
+        let list = List::new(list)
+            .block(Block::bordered()
+                .title("Processes")
+                .style(match self.device {
+                    DeviceSelector::Processes => {Color::LightYellow},
+                    _ => {Color::White}
+                })
+            )
+            .style(Color::White)
+            .highlight_style(Modifier::REVERSED)
+            .highlight_symbol("> ");
+        frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
     }
 }

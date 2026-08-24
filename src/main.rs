@@ -11,11 +11,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::{
     DefaultTerminal, Frame, layout::{
         Alignment, Constraint, Direction::{Horizontal, Vertical}, Layout, Rect,
-    }, style::{Color, Modifier, Style, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
-        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph,
+    }, style::{Color, Modifier, Style, Styled, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
+        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row,
     },
 };
-use sysinfo::{Components, Cpu, Disks, Networks, System, ProcessesToUpdate};
+use sysinfo::{Components, Cpu, Disks, Networks, System, ProcessesToUpdate, Pid};
 
 #[derive(Debug, Default)]
 struct App {
@@ -29,6 +29,7 @@ struct App {
     list_state : ListState,
     processes : Vec<Process>,
     mem_offset : usize,
+    process_selection : Option<Pid>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -78,10 +79,14 @@ struct Gpu {
     history : Vec<(f64, f64)>,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct Process {
+    pid : Pid,
     name : String,
+    memory_bytes : f64,
     memory : f64,
+    unit_mem : String,
+    status : String,
 }
 
 fn main() -> Result<()> {
@@ -151,16 +156,36 @@ impl App {
             (DeviceSelector::Processes, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
                 self.list_state.select_previous();
 
-                if let Some(index) = self.list_state.selected() {
-                    self.mem_offset = index + 1
+                if !self.processes.is_empty() {
+                    if let Some(index) = self.list_state.selected() {
+                        self.mem_offset = index + 1
+                    }
                 }
             }
 
             (DeviceSelector::Processes, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
                 self.list_state.select_next();
 
+                if !self.processes.is_empty() {
+                    if let Some(index) = self.list_state.selected() {
+                        self.mem_offset = index + 1
+                    }
+                }
+            }
+
+            (DeviceSelector::Processes, KeyCode::Enter) if key.kind == event::KeyEventKind::Press => {
                 if let Some(index) = self.list_state.selected() {
-                    self.mem_offset = index + 1
+                    self.process_selection = self.processes
+                        .get(index)
+                        .map(|process| process.pid);
+                }
+            }
+
+            (DeviceSelector::Processes, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                if self.process_selection.is_some() {
+                    self.process_selection = None
+                } else {
+                    self.device = DeviceSelector::None
                 }
             }
 
@@ -182,6 +207,7 @@ impl App {
 
             (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::None;
+                self.process_selection = None;
             }
 
             _ => {}
@@ -298,17 +324,30 @@ impl App {
     fn processes(&mut self, sys : &mut System) {
         self.processes.clear();
         sys.refresh_processes(ProcessesToUpdate::All, true);
+        const KB: f64 = 1024.0;
+        const MB: f64 = 1024.0 * KB;
+        const GB: f64 = 1024.0 * MB;
 
         for (pid, process) in sys.processes() {
             let name = process.name().to_str().unwrap_or("unknown process name");
-            let mem = process.memory() as f64 / 1000000000.0;
+            let mut mem = process.memory() as f64;
+            let mem_bytes = mem.clone();
+            let (mem, unit) = if mem >= GB as f64 {
+                (mem / GB as f64, "GB")
+            } else if mem >= MB as f64 {
+                (mem / MB as f64, "MB")
+            } else if mem >= KB as f64 {
+                (mem / KB as f64, "KB")
+            } else {
+                (mem, "B")
+            };
             // let read = process.disk_usage().read_bytes.to_string();
             // let write = process.disk_usage().written_bytes.to_string();
-            self.processes.push(Process { name: name.to_string(), memory: mem });
+            self.processes.push(Process { pid : process.pid(), name: name.to_string(), memory_bytes : mem_bytes, memory: mem, unit_mem : unit.to_string(), status : process.status().to_string() });
         }
 
         self.processes.sort_by(|a, b| {
-            b.memory.partial_cmp(&a.memory).unwrap()
+            b.memory_bytes.partial_cmp(&a.memory_bytes).unwrap()
         });
     }
 
@@ -699,45 +738,69 @@ impl App {
 
 
         //PROCESSES SECTORS
-        let width = large_lower[1].width as usize;
-        let processes: Vec<ListItem> = self.processes
-            .iter()
-            .map(|process| {
-                let usage = format!("{:.1}GB", process.memory);
-                let name = process.name.clone();
+        match self.process_selection {
+            Some(pid) => {
+                if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
+                    let rows = vec![
+                        Row::new(vec!["PID:".to_string(), process.pid.to_string()]),
+                        Row::new(vec!["Memory:".to_string(), format!("{:.2} {}", process.memory, process.unit_mem)]),
+                        Row::new(vec!["Status:".to_string(), process.status.clone()]),
+                    ];
 
-                let spaces = if self.mem_offset == 0 {
-                    width.saturating_sub(name.len() + usage.len() + 3)
+                    let widths = [
+                        Constraint::Length(12),
+                        Constraint::Min(10),
+                    ];
+
+                    let table = Table::new(rows, widths)
+                        .style(Style::default().fg(Color::White))
+                        .block(Block::bordered().style(Style::default().fg(Color::LightYellow)).title(process.name.clone()));
+
+                    frame.render_widget(table, large_lower[1]);
+                }
+                }
+            None => {
+                let width = large_lower[1].width as usize;
+                let processes: Vec<ListItem> = self.processes
+                    .iter()
+                    .map(|process| {
+                        let usage = format!("{:.1}{}", process.memory, process.unit_mem);
+                        let name = process.name.clone();
+        
+                        let spaces = if self.mem_offset == 0 {
+                            width.saturating_sub(name.len() + usage.len() + 3)
+                        } else {
+                            width.saturating_sub(name.len() + usage.len() + 5)
+                        };
+        
+                        let line = Line::from(vec![
+                            Span::raw(name),
+                            Span::raw(" ".repeat(spaces)),
+                            Span::raw(usage),
+                        ]);
+        
+                        ListItem::new(line)
+                    })
+                    .collect();
+        
+                let list = if processes.is_empty() {
+                    vec![ListItem::new(Span::raw("Attempting to retrieve processes...".to_string()))]
                 } else {
-                    width.saturating_sub(name.len() + usage.len() + 5)
+                    processes
                 };
-
-                let line = Line::from(vec![
-                    Span::raw(name),
-                    Span::raw(" ".repeat(spaces)),
-                    Span::raw(usage),
-                ]);
-
-                ListItem::new(line)
-            })
-            .collect();
-
-        let list = if processes.is_empty() {
-            vec![ListItem::new(Span::raw("Attempting to retrieve processes...".to_string()))]
-        } else {
-            processes
-        };
-        let list = List::new(list)
-            .block(Block::bordered()
-                .title("Processes")
-                .style(match self.device {
-                    DeviceSelector::Processes => {Color::LightYellow},
-                    _ => {Color::White}
-                })
-            )
-            .style(Color::White)
-            .highlight_style(Modifier::REVERSED)
-            .highlight_symbol("> ");
-        frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
+                let list = List::new(list)
+                    .block(Block::bordered()
+                        .title("Processes")
+                        .style(match self.device {
+                            DeviceSelector::Processes => {Color::LightYellow},
+                            _ => {Color::White}
+                        })
+                    )
+                    .style(Color::White)
+                    .highlight_style(Modifier::REVERSED)
+                    .highlight_symbol("> ");
+                frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
+            }
+        }
     }
 }

@@ -170,22 +170,31 @@ impl App {
             }
 
             (DeviceSelector::Processes, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
-                self.list_state.select_previous();
-
                 if !self.processes.is_empty() {
-                    if let Some(index) = self.list_state.selected() {
-                        self.mem_offset = index + 1
-                    }
+                    let last = self.processes.len() - 1;
+
+                    let previous = match self.list_state.selected() {
+                        Some(0) | None => last,
+                        Some(index) => index - 1,
+                    };
+
+                    self.list_state.select(Some(previous));
+                    self.mem_offset = previous + 1;
                 }
             }
 
             (DeviceSelector::Processes, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
-                self.list_state.select_next();
-
                 if !self.processes.is_empty() {
-                    if let Some(index) = self.list_state.selected() {
-                        self.mem_offset = index + 1
-                    }
+                    let last = self.processes.len() - 1;
+
+                    let next = match self.list_state.selected() {
+                        Some(index) if index >= last => 0,
+                        Some(index) => index + 1,
+                        None => 0,
+                    };
+
+                    self.list_state.select(Some(next));
+                    self.mem_offset = next + 1;
                 }
             }
 
@@ -194,6 +203,26 @@ impl App {
                     self.process_selection = self.processes
                         .get(index)
                         .map(|process| process.pid);
+                }
+            }
+
+            (DeviceSelector::Processes, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                if self.process_selection.is_some() && !self.processes.is_empty() {
+                    let current = self.list_state.selected().unwrap_or_default();
+                    let next = current.saturating_add(1);
+                    
+                    self.list_state.select(Some(next));
+                    self.process_selection = Some(self.processes[next].pid);
+                }
+            }
+
+            (DeviceSelector::Processes, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                if self.process_selection.is_some() && !self.processes.is_empty() {
+                    let current = self.list_state.selected().unwrap_or_default();
+                    let previous = current.saturating_sub(1);
+                    
+                    self.list_state.select(Some(previous));
+                    self.process_selection = Some(self.processes[previous].pid);
                 }
             }
 
@@ -639,7 +668,7 @@ impl App {
                         _ => {Color::White}
                     })
                 );
-            frame.render_widget(sys_info, cpu_info_vert[0]);
+            frame.render_widget(sys_info, cpu_info_vert[2]);
 
             let latest_time = selected_cpu
                     .freq_hist
@@ -691,7 +720,7 @@ impl App {
             frame.render_widget(cpu_freq, cpu_info_vert[1]);
     
             let cpu_pid = Block::bordered();
-            frame.render_widget(cpu_pid, cpu_info_vert[2]);
+            frame.render_widget(cpu_pid, cpu_info_vert[0]);
         } else {
             let error_msg = Paragraph::new("No CPU detected")
                 .block(Block::bordered().title("CPU"));
@@ -801,7 +830,7 @@ impl App {
 
 
         //PROCESSES SECTORS
-        
+        const PROCESS_COLOR : Color = Color::LightBlue;
         match self.process_selection {
             Some(pid) => {
                 if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
@@ -916,7 +945,7 @@ impl App {
 
                     let table = Table::new(rows, widths)
                         .style(Style::default().fg(Color::White))
-                        .block(Block::bordered().style(Style::default().fg(Color::LightYellow)).title(process.name.clone()));
+                        .block(Block::bordered().style(Style::default().fg(PROCESS_COLOR)).title(process.name.clone()));
 
                     frame.render_widget(table, large_lower[1]);
                 }
@@ -954,7 +983,7 @@ impl App {
                     .block(Block::bordered()
                         .title("Processes")
                         .style(match self.device {
-                            DeviceSelector::Processes => {Color::LightYellow},
+                            DeviceSelector::Processes => {PROCESS_COLOR},
                             _ => {Color::White}
                         })
                     )

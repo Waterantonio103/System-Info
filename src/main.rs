@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use std::{
-    fmt::format, thread, time::{Duration, Instant},
+    fmt::format, ops::Deref, thread, time::{Duration, Instant},
 };
 
 use all_smi::{AllSmi, Result as SmiResult};
@@ -12,10 +12,10 @@ use ratatui::{
     DefaultTerminal, Frame, layout::{
         Alignment, Constraint, Direction::{Horizontal, Vertical}, Layout, Rect,
     }, style::{Color, Modifier, Style, Styled, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
-        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row,
+        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row, Cell,
     },
 };
-use sysinfo::{Components, Cpu, Disks, Networks, System, ProcessesToUpdate, Pid};
+use sysinfo::{Components, Cpu, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
 
 #[derive(Debug, Default)]
 struct App {
@@ -82,11 +82,27 @@ struct Gpu {
 #[derive(Debug, PartialEq)]
 struct Process {
     pid : Pid,
+    parent_pid : String,
     name : String,
     memory_bytes : f64,
     memory : f64,
     unit_mem : String,
+    virtual_memory : f64,
+    unit_virt : String,
+    read : f64,
+    unit_read : String,
+    total_read : f64,
+    unit_ttread : String,
+    write : f64,
+    unit_write : String,
+    total_write : f64,
+    unit_ttwrite : String,
+    runtime : u64,
+    boot : u64,
     status : String,
+    exe : String,
+    cmd : String,
+    user : String,
 }
 
 fn main() -> Result<()> {
@@ -330,25 +346,72 @@ impl App {
 
         for (pid, process) in sys.processes() {
             let name = process.name().to_str().unwrap_or("unknown process name");
+
             let mut mem = process.memory() as f64;
-            let mem_bytes = mem.clone();
-            let (mem, unit) = if mem >= GB as f64 {
-                (mem / GB as f64, "GB")
-            } else if mem >= MB as f64 {
-                (mem / MB as f64, "MB")
-            } else if mem >= KB as f64 {
-                (mem / KB as f64, "KB")
-            } else {
-                (mem, "B")
-            };
-            // let read = process.disk_usage().read_bytes.to_string();
-            // let write = process.disk_usage().written_bytes.to_string();
-            self.processes.push(Process { pid : process.pid(), name: name.to_string(), memory_bytes : mem_bytes, memory: mem, unit_mem : unit.to_string(), status : process.status().to_string() });
+            let mem_bytes = mem;
+
+            let mut virt_mem = process.virtual_memory() as f64;
+
+            let mut rd = process.disk_usage().read_bytes as f64;
+            let mut trd = process.disk_usage().total_read_bytes as f64;
+            let mut wte = process.disk_usage().written_bytes as f64;
+            let mut twte = process.disk_usage().total_written_bytes as f64;
+
+            let (memory, unit) = self.format_bytes(mem);
+            let (virt_memory, virt_unit) = self.format_bytes(virt_mem);
+            let (read, read_unit) = self.format_bytes(rd);
+            let (total_read, ttread_unit) = self.format_bytes(trd);
+            let (write, write_unit) = self.format_bytes(wte);
+            let (total_write, ttwrite_unit) = self.format_bytes(twte);
+
+            self.processes.push(Process {
+                pid : process.pid(), 
+                parent_pid : process.parent().map(|id| id.to_string()).unwrap_or("No Parent PID".to_string()),
+                name: name.to_string(), 
+                memory_bytes : mem_bytes,
+                memory: memory, 
+                unit_mem : unit.to_string(), 
+                virtual_memory : virt_memory,
+                unit_virt : virt_unit.to_string(),
+                read : read,
+                unit_read : read_unit.to_string(), 
+                total_read : total_read,
+                unit_ttread : ttread_unit.to_string(),
+                write : write,
+                unit_write : write_unit.to_string(),
+                total_write : total_write,
+                unit_ttwrite : ttwrite_unit.to_string(),
+                runtime : process.run_time(),
+                boot : process.start_time(),
+                status : process.status().to_string(),
+                exe : process.exe().map(|path| path.display().to_string()).unwrap_or("Error: could not find executable path".to_string()),
+                cmd : process.cmd().first().and_then(|cmd| cmd.to_str()).unwrap_or("Unknown Path").to_string(),
+                user : process.user_id().map(|id| id.to_string()).unwrap_or("No ID".to_string()),
+            });
         }
 
         self.processes.sort_by(|a, b| {
             b.memory_bytes.partial_cmp(&a.memory_bytes).unwrap()
         });
+    }
+
+    fn format_bytes(&mut self, bytes : f64) -> (f64, &'static str) {
+        const KB: f64 = 1024.0;
+        const MB: f64 = 1024.0 * KB;
+        const GB: f64 = 1024.0 * MB;
+        const TB: f64 = 1024.0 * GB;
+
+        if bytes >= TB {
+                (bytes / TB , "TB")
+            } else if bytes >= GB {
+                (bytes / GB, "GB")
+            } else if bytes >= MB {
+                (bytes / MB, "MB")
+            } else if bytes >= KB {
+                (bytes / KB, "KB")
+            } else {
+                (bytes, "B")
+            }
     }
 
     fn time_fmt(&self, seconds : u64) -> String {
@@ -738,13 +801,112 @@ impl App {
 
 
         //PROCESSES SECTORS
+        
         match self.process_selection {
             Some(pid) => {
                 if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
+                    let path = textwrap::wrap(&process.exe, 60)
+                        .join("\n");
+
+                    let command = textwrap::wrap(&process.cmd, 60)
+                        .join("\n");
+
                     let rows = vec![
-                        Row::new(vec!["PID:".to_string(), process.pid.to_string()]),
-                        Row::new(vec!["Memory:".to_string(), format!("{:.2} {}", process.memory, process.unit_mem)]),
-                        Row::new(vec!["Status:".to_string(), process.status.clone()]),
+                        Row::new(vec![
+                            Cell::from("PID:"),
+                            Cell::from(process.pid.to_string()),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Parent:"),
+                            Cell::from(process.parent_pid.to_string()),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Memory:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.memory,
+                                process.unit_mem
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Virtual:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.virtual_memory,
+                                process.unit_virt
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Reading:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.read,
+                                process.unit_read
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Total Read:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.total_read,
+                                process.unit_ttread
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Writing:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.write,
+                                process.unit_write
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Total Write:"),
+                            Cell::from(format!(
+                                "{:.2} {}",
+                                process.total_write,
+                                process.unit_ttwrite
+                            )),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Status:"),
+                            Cell::from(process.status.clone()),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Runtime:"),
+                            Cell::from(self.time_fmt(process.runtime)),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Started:"),
+                            Cell::from(self.date_fmt(process.boot)),
+                        ]),
+
+                        Row::new(vec![
+                            Cell::from("Path:"),
+                            Cell::from(path),
+                        ])
+                        .height(2),
+
+                        Row::new(vec![
+                            Cell::from("Command:"),
+                            Cell::from(command),
+                        ])
+                        .height(2),
+
+                        Row::new(vec![
+                            Cell::from("UserID:"),
+                            Cell::from(process.user.to_string()),
+                        ]),
                     ];
 
                     let widths = [

@@ -22,6 +22,7 @@ struct App {
     state : AppState,
     device : DeviceSelector,
     system : Machine,
+    cpu : CpuInfo,
     cpus : Vec<Processor>,
     gpus : Vec<Gpu>,
     cpu_selection : usize,
@@ -58,13 +59,20 @@ struct Machine {
     name : Option<String>,
     uptime : u64,
     boot : u64,
+}
+
+#[derive(Debug, Default)]
+struct CpuInfo {
+    brand : String,
+    model : String,
     core_count : usize,
+    thread_count : usize,
+    arch : String,
 }
 
 #[derive(Debug, Default)]
 struct Processor {
     thread : String,
-    brand : String,
     usage : f64,
     frequency : f64,
     history : Vec<(f64, f64)>,
@@ -119,6 +127,7 @@ impl App {
         let mut last_update = Instant::now();
 
         self.update_sys(&sys);
+        self.init_cpu(&sys);
         self.detect_cpus(&sys);
         self.detect_gpus(&smi);
 
@@ -129,7 +138,6 @@ impl App {
             name : System::host_name(),
             uptime : System::uptime(),
             boot : System::boot_time(),
-            core_count : match System::physical_core_count() {Some(count) => {count}, None => {0}},
         };
 
         while self.state != AppState::Quitting {
@@ -263,11 +271,22 @@ impl App {
         self.system.uptime = System::uptime();
     }
 
+    fn init_cpu(&mut self, sys : &System) {
+        if let Some(cpu) = sys.cpus().first() {
+            self.cpu = CpuInfo {
+                brand : cpu.vendor_id().to_string(),
+                model : cpu.brand().to_string(),
+                core_count : System::physical_core_count().unwrap_or_default(),
+                thread_count : sys.cpus().len(),
+                arch : System::cpu_arch(),
+            };
+        }
+    }
+
     fn detect_cpus(&mut self, sys : &System) {
         if let Some(cpu) = sys.cpus().first() {
             let global_cpu = Processor {
-                thread : String::new(),
-                brand : cpu.vendor_id().to_string(),
+                thread : String::from("Global"),
                 usage : sys.global_cpu_usage() as f64,
                 frequency : cpu.frequency() as f64,
                 history : Vec::new(),
@@ -278,12 +297,12 @@ impl App {
         for cpu in sys.cpus() {
             let device = Processor {
                 thread : cpu.name().to_string(),
-                brand : cpu.vendor_id().to_string(),
                 usage : cpu.cpu_usage() as f64,
                 frequency : cpu.frequency() as f64,
                 history : Vec::new(),
                 freq_hist : Vec::new(),
             };
+        ;
             self.cpus.push(device);
         }
     }
@@ -582,9 +601,9 @@ impl App {
 
         let cpu_index = self.cpu_selection.min(self.cpus.len().saturating_sub(1));
         if let Some(selected_cpu) = self.cpus.get(cpu_index) {
-            let cpu_color = if selected_cpu.brand.to_uppercase().contains("AMD") {
+            let cpu_color = if self.cpu.brand.to_uppercase().contains("AMD") {
                 Color::Red
-            } else if selected_cpu.brand.to_uppercase().contains("INTEL") {
+            } else if self.cpu.brand.to_uppercase().contains("INTEL") {
                 Color::Blue
             } else {
                 Color::White
@@ -658,8 +677,33 @@ impl App {
             let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
             let sys_uptime = self.time_fmt(self.system.uptime);
             let sys_boot = self.date_fmt(self.system.boot);
-            let text = format!("OS: {}\nVersion: {}\nKernel: {}\nHost: {}\nUptime: {}\nBooted: {}",sys_name,sys_vers,sys_kernel,sys_host,sys_uptime,sys_boot);
-            let sys_info = Paragraph::new(text)
+            let sys_lines = vec![
+                Line::from(vec![
+                    Span::styled("OS: ", Style::default().bold()),
+                    Span::raw(sys_name),
+                ]),
+                Line::from(vec![
+                    Span::styled("Version: ", Style::default().bold()),
+                    Span::raw(sys_vers),
+                ]),
+                Line::from(vec![
+                    Span::styled("Kernel: ", Style::default().bold()),
+                    Span::raw(sys_kernel),
+                ]),
+                Line::from(vec![
+                    Span::styled("Host: ", Style::default().bold()),
+                    Span::raw(sys_host),
+                ]),
+                Line::from(vec![
+                    Span::styled("Uptime: ", Style::default().bold()),
+                    Span::raw(sys_uptime),
+                ]),
+                Line::from(vec![
+                    Span::styled("Booted: ", Style::default().bold()),
+                    Span::raw(sys_boot),
+                ]),
+            ];
+            let sys_info = Paragraph::new(sys_lines)
                 .block(
                     Block::bordered()
                     .title("System Info")
@@ -719,8 +763,37 @@ impl App {
                 );
             frame.render_widget(cpu_freq, cpu_info_vert[1]);
     
-            let cpu_pid = Block::bordered();
-            frame.render_widget(cpu_pid, cpu_info_vert[0]);
+            let cpu_lines = vec![
+                Line::from(vec![
+                    Span::styled("Model: ", Style::default().bold()),
+                    Span::raw(&self.cpu.model),
+                ]),
+                Line::from(vec![
+                    Span::styled("Brand: ", Style::default().bold()),
+                    Span::raw(&self.cpu.brand),
+                ]),
+                Line::from(vec![
+                    Span::styled("Cores: ", Style::default().bold()),
+                    Span::raw(self.cpu.core_count.to_string()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Threads: ", Style::default().bold()),
+                    Span::raw(self.cpu.thread_count.to_string()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Arch: ", Style::default().bold()),
+                    Span::raw(&self.cpu.arch),
+                ]),
+            ];
+            let cpu_info = Paragraph::new(cpu_lines)
+                    .block(Block::bordered()
+                        .style(match self.device {
+                            DeviceSelector::Processor => {cpu_color},
+                            _ => {Color::White}
+                        })
+                        .title("CPU Info")
+                    );
+            frame.render_widget(cpu_info, cpu_info_vert[0]);
         } else {
             let error_msg = Paragraph::new("No CPU detected")
                 .block(Block::bordered().title("CPU"));

@@ -28,6 +28,7 @@ struct App {
     cpu_selection : usize,
     gpu_selection : usize,
     list_state : ListState,
+    memory : Memory,
     processes : Vec<Process>,
     mem_offset : usize,
     process_selection : Option<Pid>,
@@ -87,6 +88,21 @@ struct Gpu {
     history : Vec<(f64, f64)>,
 }
 
+#[derive(Debug, Default)]
+struct Memory {
+    capacity : f64,
+    free : f64,
+    used : f64,
+    swap : Swap,
+}
+
+#[derive(Debug, Default)]
+struct Swap {
+    capacity : f64,
+    free : f64,
+    used : f64,
+}
+
 #[derive(Debug, PartialEq)]
 struct Process {
     pid : Pid,
@@ -130,6 +146,7 @@ impl App {
         self.init_cpu(&sys);
         self.detect_cpus(&sys);
         self.detect_gpus(&smi);
+        self.detect_mem(&sys);
 
         self.system = Machine {
             os : System::name(),
@@ -147,6 +164,7 @@ impl App {
                 self.update_sys(&sys);
                 self.update_cpus(&mut sys,elapsed);
                 self.update_gpus(&smi, elapsed);
+                self.update_mem(&mut sys);
                 self.processes(&mut sys);
                 last_update = Instant::now();
             }
@@ -385,6 +403,34 @@ impl App {
         }
     }
 
+    fn detect_mem(&mut self, sys : &System) {
+        self.memory = Memory { 
+            capacity: sys.total_memory() as f64, 
+            free: sys.free_memory() as f64, 
+            used: sys.used_memory() as f64, 
+            swap: Swap { 
+                capacity: sys.total_swap() as f64, 
+                free: sys.free_swap() as f64, 
+                used: sys.used_swap() as f64, 
+            }, 
+        };
+    }
+
+    fn update_mem(&mut self, sys : &mut System) {
+        sys.refresh_memory();
+
+        self.memory = Memory { 
+            capacity: sys.total_memory() as f64, 
+            free: sys.free_memory() as f64, 
+            used: sys.used_memory() as f64, 
+            swap: Swap { 
+                capacity: sys.total_swap() as f64, 
+                free: sys.free_swap() as f64, 
+                used: sys.used_swap() as f64, 
+            }, 
+        };
+    }
+
     fn processes(&mut self, sys : &mut System) {
         self.processes.clear();
         sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -591,10 +637,6 @@ impl App {
                 Constraint::Percentage(30),
             ])
             .split(gpu_info_vert[0]);
-
-        //DISK BLOCK
-        // let disk_block = Layout::default()
-        //     .direction(direction)
 
 
         //CPU SECTORS

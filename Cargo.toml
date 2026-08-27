@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-all-smi = { git = "https://github.com/Waterantonio103/all-smi-0.25-patched.git", branch = "quiet-stderr-warnings-0.25.0" }
+all-smi = { git = "https://github.com/Waterantonio103/all-smi-0.25-patched.git", rev = "575d0f4" }
 chrono = "0.4.45"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 sysinfo = "0.39.6"
 textwrap = "0.16.2"

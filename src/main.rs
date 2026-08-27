@@ -12,7 +12,7 @@ use ratatui::{
     DefaultTerminal, Frame, layout::{
         Alignment, Constraint, Direction::{Horizontal, Vertical}, Layout, Rect,
     }, style::{Color, Modifier, Style, Styled, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
-        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row, Cell,
+        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row, Cell, Wrap,
     },
 };
 use sysinfo::{Components, Cpu, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
@@ -82,10 +82,16 @@ struct Processor {
 
 #[derive(Debug, Default)]
 struct Gpu {
+    uuid : String,
     name : String,
     usage : f64,
-    temp : u32,
     history : Vec<(f64, f64)>,
+    temp : u32,
+    total_vram : f64,
+    total_unit : String,
+    used_vram : f64,
+    used_unit : String,
+    power : f64,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +138,62 @@ struct Process {
 fn main() -> Result<()> {
     color_eyre::install()?;
     ratatui::run(|terminal| App::default().run(terminal))
+}
+
+fn format_bytes(bytes : f64) -> (f64, &'static str) {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    const TB: f64 = 1024.0 * GB;
+
+    if bytes >= TB {
+            (bytes / TB , "TB")
+        } else if bytes >= GB {
+            (bytes / GB, "GB")
+        } else if bytes >= MB {
+            (bytes / MB, "MB")
+        } else if bytes >= KB {
+            (bytes / KB, "KB")
+        } else {
+            (bytes, "B")
+        }
+}
+
+fn time_fmt(seconds : u64) -> String {
+    const DAY_IN_SECS : u64 = 86400;
+    const HOUR_IN_SECS : u64 = 3600;
+    const MIN_IN_SECS : u64 = 60;
+    
+    let days = seconds / DAY_IN_SECS;
+    let hours = seconds / HOUR_IN_SECS;
+    let minutes = seconds / MIN_IN_SECS;
+
+    let clock = if days > 0 {
+        let remaining_hrs = seconds % DAY_IN_SECS;
+        let hours = remaining_hrs / HOUR_IN_SECS;
+        let remaining_mins = remaining_hrs % HOUR_IN_SECS;
+        let mins = remaining_mins / MIN_IN_SECS;
+        let secs = remaining_mins % MIN_IN_SECS;
+        format!("{:02}d{:02}h{:02}m{:02}s",days,hours,mins,secs)
+    } else if hours > 0 {
+        let remaining_mins = seconds % HOUR_IN_SECS;
+        let mins = remaining_mins / MIN_IN_SECS;
+        let secs = remaining_mins % MIN_IN_SECS;
+        format!("{:02}h{:02}m{:02}s",hours,mins,secs)
+    } else {
+        let secs = seconds % MIN_IN_SECS;
+        format!("{:02}m{:02}s",minutes,secs)
+    };
+    
+    clock
+}
+
+fn date_fmt(boot : u64) -> String {
+    let boot_date = DateTime::from_timestamp(boot as i64, 0)
+        .unwrap()
+        .with_timezone(&Local);
+
+    boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
 }
 
 impl App {
@@ -378,11 +440,19 @@ impl App {
     
     fn detect_gpus(&mut self, smi : &AllSmi) {
         for gpu in smi.get_gpu_info() {
+            let (total_vram, total_unit) = format_bytes(gpu.total_memory as f64);
+            let (used_vram, used_unit) = format_bytes(gpu.used_memory as f64);
             let device = Gpu {
+                uuid : gpu.uuid,
                 name : gpu.name,
                 usage : gpu.utilization,
                 temp : gpu.temperature,
                 history : Vec::new(),
+                total_vram : total_vram,
+                total_unit : total_unit.to_string(),
+                used_vram : used_vram,
+                used_unit : used_unit.to_string(),
+                power : gpu.power_consumption,
             };
             self.gpus.push(device);
         }
@@ -391,16 +461,33 @@ impl App {
     fn update_gpus(&mut self,smi : &AllSmi, elapsed : f64) {
         const MAX_SAMPLES :usize = 60;
         let fresh_vals = smi.get_gpu_info();
-        for (device, fresh) in self.gpus.iter_mut().zip(fresh_vals.iter()) {
-            
+        for device in &mut self.gpus {
+            let Some(fresh) = fresh_vals
+                .iter()
+                .find(|fresh| {
+                    if !device.uuid.is_empty() {
+                        fresh.uuid == device.uuid
+                    } else {
+                        fresh.name == device.name
+                    }
+                })
+            else {
+                continue;
+            };
+
+            let (fresh_used, fresh_unit) = format_bytes(fresh.used_memory as f64);
             device.usage = fresh.utilization;
             device.temp = fresh.temperature;
             device.history.push((elapsed, device.usage));
+            device.used_vram = fresh_used;
+            device.used_unit = fresh_unit.to_string();
+            device.power = fresh.power_consumption;
             
             if device.history.len() >= MAX_SAMPLES {
                 device.history.remove(0);
             }
         }
+            
     }
 
     fn detect_mem(&mut self, sys : &System) {
@@ -451,12 +538,12 @@ impl App {
             let mut wte = process.disk_usage().written_bytes as f64;
             let mut twte = process.disk_usage().total_written_bytes as f64;
 
-            let (memory, unit) = self.format_bytes(mem);
-            let (virt_memory, virt_unit) = self.format_bytes(virt_mem);
-            let (read, read_unit) = self.format_bytes(rd);
-            let (total_read, ttread_unit) = self.format_bytes(trd);
-            let (write, write_unit) = self.format_bytes(wte);
-            let (total_write, ttwrite_unit) = self.format_bytes(twte);
+            let (memory, unit) = format_bytes(mem);
+            let (virt_memory, virt_unit) = format_bytes(virt_mem);
+            let (read, read_unit) = format_bytes(rd);
+            let (total_read, ttread_unit) = format_bytes(trd);
+            let (write, write_unit) = format_bytes(wte);
+            let (total_write, ttwrite_unit) = format_bytes(twte);
 
             self.processes.push(Process {
                 pid : process.pid(), 
@@ -487,62 +574,6 @@ impl App {
         self.processes.sort_by(|a, b| {
             b.memory_bytes.partial_cmp(&a.memory_bytes).unwrap()
         });
-    }
-
-    fn format_bytes(&mut self, bytes : f64) -> (f64, &'static str) {
-        const KB: f64 = 1024.0;
-        const MB: f64 = 1024.0 * KB;
-        const GB: f64 = 1024.0 * MB;
-        const TB: f64 = 1024.0 * GB;
-
-        if bytes >= TB {
-                (bytes / TB , "TB")
-            } else if bytes >= GB {
-                (bytes / GB, "GB")
-            } else if bytes >= MB {
-                (bytes / MB, "MB")
-            } else if bytes >= KB {
-                (bytes / KB, "KB")
-            } else {
-                (bytes, "B")
-            }
-    }
-
-    fn time_fmt(&self, seconds : u64) -> String {
-        const DAY_IN_SECS : u64 = 86400;
-        const HOUR_IN_SECS : u64 = 3600;
-        const MIN_IN_SECS : u64 = 60;
-        
-        let days = seconds / DAY_IN_SECS;
-        let hours = seconds / HOUR_IN_SECS;
-        let minutes = seconds / MIN_IN_SECS;
-    
-        let clock = if days > 0 {
-            let remaining_hrs = seconds % DAY_IN_SECS;
-            let hours = remaining_hrs / HOUR_IN_SECS;
-            let remaining_mins = remaining_hrs % HOUR_IN_SECS;
-            let mins = remaining_mins / MIN_IN_SECS;
-            let secs = remaining_mins % MIN_IN_SECS;
-            format!("{:02}d{:02}h{:02}m{:02}s",days,hours,mins,secs)
-        } else if hours > 0 {
-            let remaining_mins = seconds % HOUR_IN_SECS;
-            let mins = remaining_mins / MIN_IN_SECS;
-            let secs = remaining_mins % MIN_IN_SECS;
-            format!("{:02}h{:02}m{:02}s",hours,mins,secs)
-        } else {
-            let secs = seconds % MIN_IN_SECS;
-            format!("{:02}m{:02}s",minutes,secs)
-        };
-        
-        clock
-    }
-
-    fn date_fmt(&self, boot : u64) -> String {
-        let boot_date = DateTime::from_timestamp(boot as i64, 0)
-            .unwrap()
-            .with_timezone(&Local);
-
-        boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
     }
 
 }
@@ -588,16 +619,6 @@ impl App {
             ])
             .split(large_upper[0]);
 
-        let cpu_info_vert = Layout::default()
-            .direction(Vertical)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ])
-            .split(cpu_block[1]);
-
         //RAM BLOCK
         let ram_block = Layout::default()
             .direction(Vertical)
@@ -617,27 +638,6 @@ impl App {
                 Constraint::Percentage(40),
             ])
             .split(large_lower[0]);
-
-        let gpu_info_vert = Layout::default()
-            .direction(Vertical)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ])
-            .split(gpu_block[1]);
-
-        let gpu_gauge_block = Layout::default()
-            .direction(Vertical)
-            .margin(1)
-            .constraints(vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ])
-            .split(gpu_info_vert[0]);
-
 
         //CPU SECTORS
 
@@ -717,8 +717,8 @@ impl App {
                 .to_string()
                 .replace(['(', ')'], "");
             let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
-            let sys_uptime = self.time_fmt(self.system.uptime);
-            let sys_boot = self.date_fmt(self.system.boot);
+            let sys_uptime = time_fmt(self.system.uptime);
+            let sys_boot = date_fmt(self.system.boot);
             let sys_lines = vec![
                 Line::from(vec![
                     Span::styled("OS: ", Style::default().bold()),
@@ -746,6 +746,7 @@ impl App {
                 ]),
             ];
             let sys_info = Paragraph::new(sys_lines)
+                .wrap(Wrap { trim: false })
                 .block(
                     Block::bordered()
                     .title("System Info")
@@ -754,7 +755,52 @@ impl App {
                         _ => {Color::White}
                     })
                 );
+            let cpu_lines = vec![
+                Line::from(vec![
+                    Span::styled("Model: ", Style::default().bold()),
+                    Span::raw(&self.cpu.model),
+                ]),
+                Line::from(vec![
+                    Span::styled("Brand: ", Style::default().bold()),
+                    Span::raw(&self.cpu.brand),
+                ]),
+                Line::from(vec![
+                    Span::styled("Cores: ", Style::default().bold()),
+                    Span::raw(self.cpu.core_count.to_string()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Threads: ", Style::default().bold()),
+                    Span::raw(self.cpu.thread_count.to_string()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Arch: ", Style::default().bold()),
+                    Span::raw(&self.cpu.arch),
+                ]),
+            ];
+            let cpu_info = Paragraph::new(cpu_lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered()
+                    .style(match self.device {
+                        DeviceSelector::Processor => {cpu_color},
+                        _ => {Color::White}
+                    })
+                    .title("CPU Info")
+                );
+            let info_width = cpu_block[1].width.saturating_sub(2).max(1);
+            let cpu_info_height = cpu_info.line_count(info_width) as u16;
+            let sys_info_height = sys_info.line_count(info_width) as u16;
+            let cpu_info_vert = Layout::default()
+                .direction(Vertical)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Length(cpu_info_height),
+                    Constraint::Fill(1),
+                    Constraint::Length(sys_info_height),
+                ])
+                .split(cpu_block[1]);
+
             frame.render_widget(sys_info, cpu_info_vert[2]);
+            frame.render_widget(cpu_info, cpu_info_vert[0]);
 
             let latest_time = selected_cpu
                     .freq_hist
@@ -772,7 +818,6 @@ impl App {
             let mid_label = format!("{mid_bound:.1}GHz");
 
             let cpu_freq_dataset = Dataset::default()
-                    .name(selected_cpu.thread.as_str())
                     .marker(Marker::Braille)
                     .graph_type(GraphType::Line)
                     .style(Style::default().fg(cpu_color))
@@ -805,37 +850,6 @@ impl App {
                 );
             frame.render_widget(cpu_freq, cpu_info_vert[1]);
     
-            let cpu_lines = vec![
-                Line::from(vec![
-                    Span::styled("Model: ", Style::default().bold()),
-                    Span::raw(&self.cpu.model),
-                ]),
-                Line::from(vec![
-                    Span::styled("Brand: ", Style::default().bold()),
-                    Span::raw(&self.cpu.brand),
-                ]),
-                Line::from(vec![
-                    Span::styled("Cores: ", Style::default().bold()),
-                    Span::raw(self.cpu.core_count.to_string()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Threads: ", Style::default().bold()),
-                    Span::raw(self.cpu.thread_count.to_string()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Arch: ", Style::default().bold()),
-                    Span::raw(&self.cpu.arch),
-                ]),
-            ];
-            let cpu_info = Paragraph::new(cpu_lines)
-                    .block(Block::bordered()
-                        .style(match self.device {
-                            DeviceSelector::Processor => {cpu_color},
-                            _ => {Color::White}
-                        })
-                        .title("CPU Info")
-                    );
-            frame.render_widget(cpu_info, cpu_info_vert[0]);
         } else {
             let error_msg = Paragraph::new("No CPU detected")
                 .block(Block::bordered().title("CPU"));
@@ -866,14 +880,16 @@ impl App {
     
             let data = &selected_gpu.history;
     
-            let display_name = selected_gpu.name
-                .replace("NVIDIA GeForce ", "")
-                .replace("Laptop GPU", "")
-                .replace("AMD Radeon ", "")
-                .replace("Graphics", "");
-    
+            // let display_name = selected_gpu.name
+            //     .replace("NVIDIA GeForce ", "")
+            //     .replace("Laptop GPU", "")
+            //     .replace("AMD Radeon ", "")
+            //     .replace("Graphics", "");
+
+            let name = format!("GPU {}", gpu_index);
+
             let gpu_dataset_usage = Dataset::default()
-                .name(display_name)
+                .name(name)
                 .marker(Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(gpu_color))
@@ -916,24 +932,75 @@ impl App {
                         .style(Color::White),
                 );
             frame.render_widget(gpu_usage_chart, gpu_block[0]);
-    
+
+            let gpu_lines = vec![
+                Line::from(vec![
+                    Span::styled("GPU: ", Style::default().bold()),
+                    Span::raw(&selected_gpu.name),
+                ]),
+                Line::from(vec![
+                    Span::styled("UUID: ", Style::default().bold()),
+                    Span::raw(&selected_gpu.uuid),
+                ]),
+                Line::from(vec![
+                    Span::styled("VRAM: ", Style::default().bold()),
+                    Span::raw(format!("{:.1}{}",selected_gpu.used_vram, selected_gpu.used_unit)),
+                    Span::raw(" / "),
+                    Span::raw(format!("{:.1}{}",selected_gpu.total_vram, selected_gpu.total_unit)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Power Consumption: ", Style::default().bold()),
+                    Span::raw(format!("{:.1}W", selected_gpu.power)),
+                ]),
+            ];
+
+            let gpu_info = Paragraph::new(gpu_lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered()
+                .title("GPU Info")
+                .style(match self.device {
+                    DeviceSelector::Graphics => {gpu_color}
+                    _ => {Color::White}
+                })
+            );
+            let gpu_info_height = gpu_info
+                .line_count(gpu_block[1].width.saturating_sub(2).max(1)) as u16;
+            let gpu_info_vert = Layout::default()
+                .direction(Vertical)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Length(gpu_info_height),
+                    Constraint::Length(5),
+                    Constraint::Fill(1),
+                ])
+                .split(gpu_block[1]);
+            let gpu_gauge_block = Layout::default()
+                .direction(Vertical)
+                .margin(1)
+                .constraints(vec![
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(70),
+                    Constraint::Percentage(15),
+                ])
+                .split(gpu_info_vert[1]);
+
+            frame.render_widget(gpu_info, gpu_info_vert[0]);
+            
             let temp = selected_gpu.temp;
             let gauge_bound = Block::bordered()
-                .title("GPU Temp(C)")
+                .title("GPU Temp (°C)")
                 .style(match self.device {
                     DeviceSelector::Graphics => {gpu_color}
                     _ => {Color::White}
                 });
-                frame.render_widget(gauge_bound, gpu_info_vert[0]);
-    
+            frame.render_widget(gauge_bound, gpu_info_vert[1]);
+
             let gpu_temp = Gauge::default()
                 .gauge_style(gpu_color)
                 .ratio((temp as f64) / 100.0)
                 .label(temp.to_string());
             frame.render_widget(gpu_temp, gpu_gauge_block[1]);
     
-            let gpu_usage = Block::bordered();
-            frame.render_widget(gpu_usage, gpu_info_vert[1]);
     
             let gpu_name = Block::bordered();
             frame.render_widget(gpu_name, gpu_info_vert[2]);
@@ -1027,12 +1094,12 @@ impl App {
 
                         Row::new(vec![
                             Cell::from("Runtime:"),
-                            Cell::from(self.time_fmt(process.runtime)),
+                            Cell::from(time_fmt(process.runtime)),
                         ]),
 
                         Row::new(vec![
                             Cell::from("Started:"),
-                            Cell::from(self.date_fmt(process.boot)),
+                            Cell::from(date_fmt(process.boot)),
                         ]),
 
                         Row::new(vec![

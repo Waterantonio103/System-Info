@@ -12,7 +12,7 @@ use ratatui::{
     DefaultTerminal, Frame, layout::{
         Alignment, Constraint, Direction::{Horizontal, Vertical}, Layout, Rect,
     }, style::{Color, Modifier, Style, Styled, Stylize, palette::tailwind}, symbols::Marker, text::{Line, Span}, widgets::{
-        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Table, Row, Cell, Wrap,
+        Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Row, Table, Wrap,
     },
 };
 use sysinfo::{Components, Cpu, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
@@ -629,6 +629,46 @@ impl App {
             ])
             .split(large_upper[1]);
 
+        
+        let ram_top = Layout::default()
+        .direction(Horizontal)
+        .margin(0)
+        .constraints(vec![
+            Constraint::Max(20),
+            Constraint::Max(20),
+            Constraint::Fill(1),
+            ])
+            .split(ram_block[0]);
+        
+        let used_inner = Layout::default()
+            .direction(Horizontal)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Percentage(13),
+                Constraint::Percentage(80),
+                Constraint::Percentage(7),
+            ])
+            .split(ram_top[0]);
+
+        let ram_right = Layout::default()
+            .direction(Horizontal)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Percentage(40),
+                Constraint::Percentage(60),
+            ])
+            .split(ram_top[2]);
+
+        let used_swap_inner = Layout::default()
+            .direction(Horizontal)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Percentage(13),
+                Constraint::Percentage(80),
+                Constraint::Percentage(7),
+            ])
+            .split(ram_top[1]);
+
         //GPU BLOCK
         let gpu_block = Layout::default()
             .direction(Horizontal)
@@ -858,12 +898,52 @@ impl App {
 
 
         //RAM SECTORS
-        let ram_usage = Block::bordered();
-        frame.render_widget(ram_usage, ram_block[0]);
 
-        let ram_info = Block::bordered();
-        frame.render_widget(ram_info, ram_block[1]);
+        //Raw Mem
+        let used_mem = ((self.memory.used / self.memory.capacity) * 100.0) as u64;
+        let bar_mem = Bar::default()
+            .value(used_mem)
+            .label(Line::from(format!("{used_mem}%")));
 
+        let used_mem_chart = BarChart::vertical(vec![bar_mem])
+            .bar_width(used_inner[1].width.saturating_sub(2))
+            .bar_gap(0)
+            .max(100);
+        frame.render_widget(used_mem_chart, used_inner[1]);
+    
+        let bar_chart_outer = Block::bordered()
+            .title("RAM USAGE (%)");
+        frame.render_widget(bar_chart_outer, ram_top[0]);
+
+        //Swap
+
+        let title = String::from("SWAP USAGE (%)");
+        if self.memory.swap.used == 0.0 {
+            let no_swap_block = Paragraph::new("Swap inactive...")
+                .block(Block::bordered().title(title));
+            frame.render_widget(no_swap_block, ram_top[1]);
+        } else {
+            let swap_used = ((self.memory.swap.used / self.memory.swap.capacity) * 100.0) as u64;
+            let bar_swap = Bar::default()
+                .value(swap_used)
+                .label(Line::from(format!("{swap_used}%")));
+    
+            let used_swap_chart = BarChart::vertical(vec![bar_swap])
+                .bar_width(used_inner[1].width.saturating_sub(2))
+                .bar_gap(0)
+                .max(100);
+            frame.render_widget(used_swap_chart, used_swap_inner[1]);
+        
+            let bar_chart_outer = Block::bordered()
+                .title(title);
+            frame.render_widget(bar_chart_outer, ram_top[1]);
+        }
+
+        let block_test1 = Block::bordered();
+        frame.render_widget(block_test1, ram_right[0]);
+
+        let block_test2 = Block::bordered();
+        frame.render_widget(block_test2, ram_right[1]);
 
         //GPU SECTORS
         let gpu_index = self.gpu_selection.min(self.gpus.len().saturating_sub(1));

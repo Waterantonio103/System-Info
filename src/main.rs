@@ -16,6 +16,7 @@ use ratatui::{
     },
 };
 use sysinfo::{Components, Cpu, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
+use textwrap::wrap;
 
 #[derive(Debug, Default)]
 struct App {
@@ -50,6 +51,7 @@ enum DeviceSelector {
     Graphics,
     Disk,
     Processes,
+    Memory,
 }
 
 #[derive(Debug, Default)]
@@ -100,6 +102,7 @@ struct Memory {
     free : f64,
     used : f64,
     swap : Swap,
+    prec_count : usize,
 }
 
 #[derive(Debug, Default)]
@@ -322,6 +325,22 @@ impl App {
                 }
             }
 
+            (DeviceSelector::Memory, KeyCode::Char('+')) if key.kind == event::KeyEventKind::Press => {
+                if self.memory.prec_count < 4 {
+                    self.memory.prec_count += 1;
+                } else {
+                    self.memory.prec_count = 0;
+                }
+            }
+
+            (DeviceSelector::Memory, KeyCode::Char('-')) if key.kind == event::KeyEventKind::Press => {
+                if self.memory.prec_count == 0 {
+                    self.memory.prec_count = 3;
+                } else {
+                    self.memory.prec_count -= 1;
+                }
+            }
+
             (_, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Processor;
             }
@@ -332,6 +351,10 @@ impl App {
 
             (_, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Processes;
+            }
+
+            (_, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Memory;
             }
 
             (_, KeyCode::Char('q')) => {
@@ -499,22 +522,20 @@ impl App {
                 capacity: sys.total_swap() as f64, 
                 free: sys.free_swap() as f64, 
                 used: sys.used_swap() as f64, 
-            }, 
+            },
+            prec_count : 1, 
         };
     }
 
     fn update_mem(&mut self, sys : &mut System) {
         sys.refresh_memory();
 
-        self.memory = Memory { 
-            capacity: sys.total_memory() as f64, 
-            free: sys.free_memory() as f64, 
-            used: sys.used_memory() as f64, 
-            swap: Swap { 
-                capacity: sys.total_swap() as f64, 
-                free: sys.free_swap() as f64, 
-                used: sys.used_swap() as f64, 
-            }, 
+        self.memory.free = sys.free_memory() as f64;
+        self.memory.used = sys.used_memory() as f64;
+        self.memory.swap = Swap { 
+            capacity: sys.total_swap() as f64, 
+            free: sys.free_swap() as f64, 
+            used: sys.used_swap() as f64, 
         };
     }
 
@@ -658,6 +679,15 @@ impl App {
                 Constraint::Percentage(60),
             ])
             .split(ram_top[2]);
+
+        let ram_swap = Layout::default()
+            .direction(Vertical)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(ram_right[0]);
 
         let used_swap_inner = Layout::default()
             .direction(Horizontal)
@@ -898,11 +928,15 @@ impl App {
 
 
         //RAM SECTORS
-
+        let mem_color = match self.device {
+            DeviceSelector::Memory => {Color::LightMagenta}
+            _ => {Color::White}
+        };
         //Raw Mem
         let used_mem = ((self.memory.used / self.memory.capacity) * 100.0) as u64;
         let bar_mem = Bar::default()
             .value(used_mem)
+            .style(mem_color)
             .label(Line::from(format!("{used_mem}%")));
 
         let used_mem_chart = BarChart::vertical(vec![bar_mem])
@@ -912,7 +946,8 @@ impl App {
         frame.render_widget(used_mem_chart, used_inner[1]);
     
         let bar_chart_outer = Block::bordered()
-            .title("RAM USAGE (%)");
+            .title("RAM USAGE (%)")
+            .style(mem_color);
         frame.render_widget(bar_chart_outer, ram_top[0]);
 
         //Swap
@@ -920,12 +955,13 @@ impl App {
         let title = String::from("SWAP USAGE (%)");
         if self.memory.swap.used == 0.0 {
             let no_swap_block = Paragraph::new("Swap inactive...")
-                .block(Block::bordered().title(title));
+                .block(Block::bordered().title(title).style(mem_color));
             frame.render_widget(no_swap_block, ram_top[1]);
         } else {
             let swap_used = ((self.memory.swap.used / self.memory.swap.capacity) * 100.0) as u64;
             let bar_swap = Bar::default()
                 .value(swap_used)
+                .style(mem_color)
                 .label(Line::from(format!("{swap_used}%")));
     
             let used_swap_chart = BarChart::vertical(vec![bar_swap])
@@ -935,15 +971,85 @@ impl App {
             frame.render_widget(used_swap_chart, used_swap_inner[1]);
         
             let bar_chart_outer = Block::bordered()
-                .title(title);
+                .title(title)
+                .style(mem_color);
             frame.render_widget(bar_chart_outer, ram_top[1]);
         }
 
-        let block_test1 = Block::bordered();
-        frame.render_widget(block_test1, ram_right[0]);
+        let (capacity, cap_unit) = format_bytes(self.memory.capacity);
+        let (used, used_unit) = format_bytes(self.memory.used);
+        let (free, free_unit) = format_bytes(self.memory.free);
 
-        let block_test2 = Block::bordered();
-        frame.render_widget(block_test2, ram_right[1]);
+        let ram_lines = vec![
+            Line::from(vec![
+                Span::styled("Capacity: ", Style::default().bold()),
+                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+            ]),
+            Line::from(vec![
+                Span::styled("Live: ", Style::default().bold()),
+            ]),
+            Line::from(vec![
+                Span::raw(" - In use: "),
+                Span::raw(format!("{:.prec$}{}",used, used_unit, prec = self.memory.prec_count)),
+            ]),
+            Line::from(vec![
+                Span::raw(" - Free: "),
+                Span::raw(format!("{:.prec$}{}",free, free_unit, prec = self.memory.prec_count)),
+            ]),
+        ];
+
+        let ram_info = Paragraph::new(ram_lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered()
+                .title("RAM")
+                .style(mem_color)
+            );
+        frame.render_widget(ram_info, ram_swap[0]);
+
+        let swap_used = self.memory.swap.used;
+        let (capacity, cap_unit) = format_bytes(self.memory.swap.capacity);
+        let (used, used_unit) = format_bytes(swap_used);
+        let (free, free_unit) = format_bytes(self.memory.swap.free);
+
+        let mut swap_lines = Vec::new();
+
+        if swap_used == 0.0 {
+            swap_lines = vec![
+            Line::from(vec![
+                Span::styled("Capacity: ", Style::default().bold()),
+                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+            ]),
+            Line::from(vec![
+                Span::raw("System swap currently inactive... "),
+            ]),
+        ];
+        } else {
+            swap_lines = vec![
+            Line::from(vec![
+                Span::styled("Capacity: ", Style::default().bold()),
+                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+            ]),
+            Line::from(vec![
+                Span::styled("Live: ", Style::default().bold()),
+            ]),
+            Line::from(vec![
+                Span::raw(" - In use: "),
+                Span::raw(format!("{:.prec$}{}",used, used_unit, prec = self.memory.prec_count)),
+            ]),
+            Line::from(vec![
+                Span::raw(" - Free: "),
+                Span::raw(format!("{:.prec$}{}",free, free_unit, prec = self.memory.prec_count)),
+            ]),
+        ];
+        }
+
+        let swap_info = Paragraph::new(swap_lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered()
+                .title("SWAP")
+                .style(mem_color)
+            );
+        frame.render_widget(swap_info, ram_swap[1]);
 
         //GPU SECTORS
         let gpu_index = self.gpu_selection.min(self.gpus.len().saturating_sub(1));

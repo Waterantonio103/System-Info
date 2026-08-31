@@ -47,11 +47,40 @@ enum AppState {
 enum DeviceSelector {
     #[default]
     None,
+    System,
     Processor,
     Graphics,
     Disk,
     Processes,
     Memory,
+    Network,
+}
+
+impl DeviceSelector {
+    fn name(&self) -> String {
+        match self {
+            DeviceSelector::None => String::from("No device selected"),
+            DeviceSelector::System => String::from("System"),
+            DeviceSelector::Processor => String::from("Processors"),
+            DeviceSelector::Graphics => String::from("Graphics Cards"),
+            DeviceSelector::Disk => String::from("Disks"),
+            DeviceSelector::Processes => String::from("Processes"),
+            DeviceSelector::Memory => String::from("Memory"),
+            DeviceSelector::Network => String::from("Networks"),
+        }
+    }
+    fn keybind_description(&self) -> String {
+        match self {
+            DeviceSelector::None => String::from("Quit (q) | System (s) | CPU (c) | GPU (g) | Disk (d) | Processes (p) | Memory (m) | Network (n)"),
+            DeviceSelector::System => String::from("Quit (q) | Back (Esc)"),
+            DeviceSelector::Processor => String::from("Quit (q) | Back (Esc) | Next CPU (Right)"),
+            DeviceSelector::Graphics => String::from("Quit (q) | Back (Esc) | Next GPU (Right)"),
+            DeviceSelector::Disk => String::from("Quit (q) | Back (Esc)"),
+            DeviceSelector::Processes => String::from("Quit (q) | Back (Esc) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)"),
+            DeviceSelector::Memory => String::from("Quit (q) | Back (Esc) | Precision (+/-)"),
+            DeviceSelector::Network => String::from("Quit (q) | Back (Esc)"),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -112,7 +141,7 @@ struct Swap {
     used : f64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct Process {
     pid : Pid,
     parent_pid : String,
@@ -122,6 +151,7 @@ struct Process {
     unit_mem : String,
     virtual_memory : f64,
     unit_virt : String,
+    cpu_usage : f64,
     read : f64,
     unit_read : String,
     total_read : f64,
@@ -199,6 +229,26 @@ fn date_fmt(boot : u64) -> String {
     boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
 }
 
+fn process_by_cpu(processes: &Vec<Process>) -> Option<&Process> {
+    let mut largest : f64 = 0.0;
+    let mut process_id : usize = 0;
+    for (id, process) in processes.iter().enumerate() {
+        if process.cpu_usage > largest {
+            process_id = id;
+        }
+    }
+    processes.get(process_id)
+}
+
+const QUIT_BIND : char = 'q';
+const CPU_BIND : char = 'c';
+const GPU_BIND : char = 'g';
+const PROCESS_BIND : char = 'p';
+const MEM_BIND : char = 'm';
+const DISK_BIND : char = 'd';
+const SYSTEM_BIND : char = 's';
+const NETWORK_BIND : char = 'n';
+
 impl App {
     fn run(&mut self, terminal : &mut DefaultTerminal) -> Result<()> {
         let mut sys = System::new_all();
@@ -248,6 +298,44 @@ impl App {
 
     fn handle_key_events(&mut self, key : KeyEvent) {
         match (&self.device, key.code) {
+
+            (_, KeyCode::Char(CPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Processor;
+            }
+
+            (_, KeyCode::Char(GPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Graphics;
+            }
+
+            (_, KeyCode::Char(PROCESS_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Processes;
+            }
+
+            (_, KeyCode::Char(MEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Memory;
+            }
+
+            (_, KeyCode::Char(DISK_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Disk;
+            }
+
+            (_, KeyCode::Char(SYSTEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::System;
+            }
+
+            (_, KeyCode::Char(NETWORK_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::Network;
+            }
+
+            (_, KeyCode::Char(QUIT_BIND)) => {
+                self.state = AppState::Quitting;
+            }
+
+            (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+                self.process_selection = None;
+            }
+
             (DeviceSelector::Processor, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
                 if !self.cpus.is_empty() {
                     self.cpu_selection = (self.cpu_selection + 1) % self.cpus.len();
@@ -341,30 +429,7 @@ impl App {
                 }
             }
 
-            (_, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::Processor;
-            }
-
-            (_, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::Graphics;
-            }
-
-            (_, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::Processes;
-            }
-
-            (_, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::Memory;
-            }
-
-            (_, KeyCode::Char('q')) => {
-                self.state = AppState::Quitting;
-            }
-
-            (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::None;
-                self.process_selection = None;
-            }
+            
 
             _ => {}
         }
@@ -575,6 +640,7 @@ impl App {
                 unit_mem : unit.to_string(), 
                 virtual_memory : virt_memory,
                 unit_virt : virt_unit.to_string(),
+                cpu_usage : process.cpu_usage() as f64,
                 read : read,
                 unit_read : read_unit.to_string(), 
                 total_read : total_read,
@@ -607,10 +673,24 @@ impl App {
             .direction(Vertical)
             .margin(1)
             .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
+                Constraint::Percentage(4),
+                Constraint::Percentage(49),
+                Constraint::Percentage(47),
             ])
             .split(area);
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(format!("Selection: {}", self.device.name()), Style::default().bold()),
+            ]),
+            Line::from(vec![
+                Span::raw(format!("{}", self.device.keybind_description())),
+            ]),
+        ];
+        let top_bar = Paragraph::new(lines)
+            .alignment(Alignment::Center);
+
+        frame.render_widget(top_bar, largest[0]);
 
         let large_upper = Layout::default()
             .direction(Horizontal)
@@ -619,7 +699,7 @@ impl App {
                 Constraint::Percentage(50),
                 Constraint::Percentage(50),
             ])
-            .split(largest[0]);
+            .split(largest[1]);
 
         let large_lower = Layout::default()
             .direction(Horizontal)
@@ -628,7 +708,7 @@ impl App {
                 Constraint::Percentage(50),
                 Constraint::Percentage(50),
             ])
-            .split(largest[1]);
+            .split(largest[2]);
 
         //CPU BLOCK
         let cpu_block = Layout::default()
@@ -688,6 +768,15 @@ impl App {
                 Constraint::Percentage(50),
             ])
             .split(ram_right[0]);
+
+        let top_processes = Layout::default()
+            .direction(Vertical)
+            .margin(1)
+            .constraints(vec![
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(ram_right[1]);
 
         let used_swap_inner = Layout::default()
             .direction(Horizontal)
@@ -1220,6 +1309,14 @@ impl App {
                         ]),
 
                         Row::new(vec![
+                            Cell::from("CPU:"),
+                            Cell::from(format!(
+                                "{:.2} %",
+                                process.cpu_usage,
+                            )),
+                        ]),
+
+                        Row::new(vec![
                             Cell::from("Memory:"),
                             Cell::from(format!(
                                 "{:.2} {}",
@@ -1361,5 +1458,25 @@ impl App {
                 frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
             }
         }
+        
+        let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {PROCESS_COLOR}, _ => {Color::White}});
+        frame.render_widget(outer_block, ram_right[1]);
+        let mut temp = self.processes.clone();
+        temp.sort_by(|a, b| {b.cpu_usage.total_cmp(&a.cpu_usage)});
+        let mut lines = vec![
+                    Line::from(vec![
+                        Span::styled("Top CPU: ", Style::default().bold()),
+                    ]),
+        ];
+        for (rank, process) in temp.iter().take(5).enumerate() {
+            let pos = rank + 1;
+            let line = Line::from(vec![
+                        Span::styled(format!("{} - ", pos), Style::default().bold()),
+                        Span::raw(format!("{} : {:.1}%", process.name, process.cpu_usage))
+            ]);
+            lines.push(line);
+        }
+        let top_cpu_block = Paragraph::new(lines);
+        frame.render_widget(top_cpu_block, top_processes[0]);
     }
 }

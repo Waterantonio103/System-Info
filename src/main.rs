@@ -72,13 +72,13 @@ impl DeviceSelector {
     fn keybind_description(&self) -> String {
         match self {
             DeviceSelector::None => String::from("Quit (q) | System (s) | CPU (c) | GPU (g) | Disk (d) | Processes (p) | Memory (m) | Network (n)"),
-            DeviceSelector::System => String::from("Quit (q) | Back (Esc)"),
-            DeviceSelector::Processor => String::from("Quit (q) | Back (Esc) | Next CPU (Right)"),
-            DeviceSelector::Graphics => String::from("Quit (q) | Back (Esc) | Next GPU (Right)"),
-            DeviceSelector::Disk => String::from("Quit (q) | Back (Esc)"),
-            DeviceSelector::Processes => String::from("Quit (q) | Back (Esc) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)"),
-            DeviceSelector::Memory => String::from("Quit (q) | Back (Esc) | Precision (+/-)"),
-            DeviceSelector::Network => String::from("Quit (q) | Back (Esc)"),
+            DeviceSelector::System => String::from("Quit (q) | Back (Esc / s)"),
+            DeviceSelector::Processor => String::from("Quit (q) | Back (Esc / c) | Next CPU (Right)"),
+            DeviceSelector::Graphics => String::from("Quit (q) | Back (Esc / g) | Next GPU (Right)"),
+            DeviceSelector::Disk => String::from("Quit (q) | Back (Esc / d)"),
+            DeviceSelector::Processes => String::from("Quit (q) | Back (Esc / p) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)"),
+            DeviceSelector::Memory => String::from("Quit (q) | Back (Esc / m) | Precision (+/-)"),
+            DeviceSelector::Network => String::from("Quit (q) | Back (Esc / n)"),
         }
     }
 }
@@ -299,6 +299,34 @@ impl App {
     fn handle_key_events(&mut self, key : KeyEvent) {
         match (&self.device, key.code) {
 
+            (DeviceSelector::Processor, KeyCode::Char(CPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::Graphics, KeyCode::Char(GPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::Processes, KeyCode::Char(PROCESS_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::Memory, KeyCode::Char(MEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::Disk, KeyCode::Char(DISK_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::System, KeyCode::Char(SYSTEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
+            (DeviceSelector::Network, KeyCode::Char(NETWORK_BIND)) if key.kind == event::KeyEventKind::Press => {
+                self.device = DeviceSelector::None;
+            }
+
             (_, KeyCode::Char(CPU_BIND)) if key.kind == event::KeyEventKind::Press => {
                 self.device = DeviceSelector::Processor;
             }
@@ -342,9 +370,29 @@ impl App {
                 }
             }
 
+            (DeviceSelector::Processor, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                if !self.cpus.is_empty() {
+                    let previous = if self.cpu_selection == 0 {
+                        self.cpu_selection = self.cpus.len() - 1;
+                    } else {
+                        self.cpu_selection = (self.cpu_selection - 1) % self.cpus.len();
+                    };
+                }
+            }
+
             (DeviceSelector::Graphics, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
                 if !self.gpus.is_empty() {
                     self.gpu_selection = (self.gpu_selection + 1) % self.gpus.len();
+                }
+            }
+
+            (DeviceSelector::Graphics, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                if !self.gpus.is_empty() {
+                    let previous = if self.gpu_selection == 0 {
+                        self.gpu_selection = self.gpus.len() - 1;
+                    } else {
+                        self.gpu_selection = (self.gpu_selection - 1) % self.gpus.len();
+                    };
                 }
             }
 

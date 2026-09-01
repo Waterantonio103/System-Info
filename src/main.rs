@@ -1,7 +1,11 @@
 #![allow(unused)]
 
+mod models;
+
+use models::*;
+
 use std::{
-    fmt::format, ops::Deref, thread, time::{Duration, Instant},
+    ffi::OsStr, fmt::format, ops::Deref, thread, time::{Duration, Instant},
 };
 
 use all_smi::{AllSmi, Result as SmiResult};
@@ -15,7 +19,7 @@ use ratatui::{
         Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState, Padding, Paragraph, Row, Table, Wrap,
     },
 };
-use sysinfo::{Components, Cpu, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
+use sysinfo::{Components, Cpu, Disk, DiskUsage, Disks, Networks, Pid, ProcessesToUpdate, System, Uid};
 use textwrap::wrap;
 
 #[derive(Debug, Default)]
@@ -33,6 +37,8 @@ struct App {
     processes : Vec<Process>,
     mem_offset : usize,
     process_selection : Option<Pid>,
+    disks : Vec<Disko>,
+    disk_selection : usize,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -41,131 +47,6 @@ enum AppState {
     Running,
     Started,
     Quitting,
-}
-
-#[derive(Debug, Default, PartialEq)]
-enum DeviceSelector {
-    #[default]
-    None,
-    System,
-    Processor,
-    Graphics,
-    Disk,
-    Processes,
-    Memory,
-    Network,
-}
-
-impl DeviceSelector {
-    fn name(&self) -> String {
-        match self {
-            DeviceSelector::None => String::from("No device selected"),
-            DeviceSelector::System => String::from("System"),
-            DeviceSelector::Processor => String::from("Processors"),
-            DeviceSelector::Graphics => String::from("Graphics Cards"),
-            DeviceSelector::Disk => String::from("Disks"),
-            DeviceSelector::Processes => String::from("Processes"),
-            DeviceSelector::Memory => String::from("Memory"),
-            DeviceSelector::Network => String::from("Networks"),
-        }
-    }
-    fn keybind_description(&self) -> String {
-        match self {
-            DeviceSelector::None => String::from("Quit (q) | System (s) | CPU (c) | GPU (g) | Disk (d) | Processes (p) | Memory (m) | Network (n)"),
-            DeviceSelector::System => String::from("Quit (q) | Back (Esc / s)"),
-            DeviceSelector::Processor => String::from("Quit (q) | Back (Esc / c) | Next CPU (Right)"),
-            DeviceSelector::Graphics => String::from("Quit (q) | Back (Esc / g) | Next GPU (Right)"),
-            DeviceSelector::Disk => String::from("Quit (q) | Back (Esc / d)"),
-            DeviceSelector::Processes => String::from("Quit (q) | Back (Esc / p) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)"),
-            DeviceSelector::Memory => String::from("Quit (q) | Back (Esc / m) | Precision (+/-)"),
-            DeviceSelector::Network => String::from("Quit (q) | Back (Esc / n)"),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct Machine {
-    os : Option<String>,
-    version : Option<String>,
-    kernel : Option<String>,
-    name : Option<String>,
-    uptime : u64,
-    boot : u64,
-}
-
-#[derive(Debug, Default)]
-struct CpuInfo {
-    brand : String,
-    model : String,
-    core_count : usize,
-    thread_count : usize,
-    arch : String,
-}
-
-#[derive(Debug, Default)]
-struct Processor {
-    thread : String,
-    usage : f64,
-    frequency : f64,
-    history : Vec<(f64, f64)>,
-    freq_hist : Vec<(f64, f64)>,
-}
-
-#[derive(Debug, Default)]
-struct Gpu {
-    uuid : String,
-    name : String,
-    usage : f64,
-    history : Vec<(f64, f64)>,
-    temp : u32,
-    total_vram : f64,
-    total_unit : String,
-    used_vram : f64,
-    used_unit : String,
-    power : f64,
-}
-
-#[derive(Debug, Default)]
-struct Memory {
-    capacity : f64,
-    free : f64,
-    used : f64,
-    swap : Swap,
-    prec_count : usize,
-}
-
-#[derive(Debug, Default)]
-struct Swap {
-    capacity : f64,
-    free : f64,
-    used : f64,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-struct Process {
-    pid : Pid,
-    parent_pid : String,
-    name : String,
-    memory_bytes : f64,
-    memory : f64,
-    unit_mem : String,
-    virtual_memory : f64,
-    unit_virt : String,
-    cpu_usage : f64,
-    read : f64,
-    unit_read : String,
-    total_read : f64,
-    unit_ttread : String,
-    write : f64,
-    unit_write : String,
-    total_write : f64,
-    unit_ttwrite : String,
-    runtime : u64,
-    boot : u64,
-    status : String,
-    exe : String,
-    cmd : String,
-    user : String,
 }
 
 fn main() -> Result<()> {
@@ -229,17 +110,6 @@ fn date_fmt(boot : u64) -> String {
     boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
 }
 
-fn process_by_cpu(processes: &Vec<Process>) -> Option<&Process> {
-    let mut largest : f64 = 0.0;
-    let mut process_id : usize = 0;
-    for (id, process) in processes.iter().enumerate() {
-        if process.cpu_usage > largest {
-            process_id = id;
-        }
-    }
-    processes.get(process_id)
-}
-
 const QUIT_BIND : char = 'q';
 const CPU_BIND : char = 'c';
 const GPU_BIND : char = 'g';
@@ -253,6 +123,7 @@ impl App {
     fn run(&mut self, terminal : &mut DefaultTerminal) -> Result<()> {
         let mut sys = System::new_all();
         let smi = AllSmi::new()?;
+        let mut disks = Disks::new_with_refreshed_list();
 
         let started_at = Instant::now();
         let mut last_update = Instant::now();
@@ -262,6 +133,7 @@ impl App {
         self.detect_cpus(&sys);
         self.detect_gpus(&smi);
         self.detect_mem(&sys);
+        self.detect_disks(&disks);
 
         self.system = Machine {
             os : System::name(),
@@ -281,6 +153,7 @@ impl App {
                 self.update_gpus(&smi, elapsed);
                 self.update_mem(&mut sys);
                 self.processes(&mut sys);
+                self.update_disks(&mut disks);
                 last_update = Instant::now();
             }
             
@@ -477,7 +350,21 @@ impl App {
                 }
             }
 
-            
+            (DeviceSelector::Disk, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                if !self.disks.is_empty() {
+                    self.disk_selection = (self.disk_selection + 1) % self.disks.len();
+                }
+            }
+
+            (DeviceSelector::Disk, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                if !self.disks.is_empty() {
+                    let previous = if self.disk_selection == 0 {
+                        self.disk_selection = self.disks.len() - 1;
+                    } else {
+                        self.disk_selection = (self.disk_selection - 1) % self.disks.len();
+                    };
+                }
+            }
 
             _ => {}
         }
@@ -504,7 +391,7 @@ impl App {
             let global_cpu = Processor {
                 thread : String::from("Global"),
                 usage : sys.global_cpu_usage() as f64,
-                frequency : cpu.frequency() as f64,
+                frequency : cpu.frequency() as f64 / 1000.0,
                 history : Vec::new(),
                 freq_hist : Vec::new(),
             };
@@ -514,7 +401,7 @@ impl App {
             let device = Processor {
                 thread : cpu.name().to_string(),
                 usage : cpu.cpu_usage() as f64,
-                frequency : cpu.frequency() as f64,
+                frequency : cpu.frequency() as f64 / 1000.0,
                 history : Vec::new(),
                 freq_hist : Vec::new(),
             };
@@ -533,7 +420,7 @@ impl App {
 
         for (processor, cpu) in self.cpus.iter_mut().skip(1).zip(sys.cpus()) {
             let usage = cpu.cpu_usage() as f64;
-            let frequency = cpu.frequency() as f64 / 1000.0; // MHz -> GHz
+            let frequency = cpu.frequency() as f64 / 1000.0; 
 
             processor.usage = usage;
             processor.frequency = frequency;
@@ -576,18 +463,14 @@ impl App {
     
     fn detect_gpus(&mut self, smi : &AllSmi) {
         for gpu in smi.get_gpu_info() {
-            let (total_vram, total_unit) = format_bytes(gpu.total_memory as f64);
-            let (used_vram, used_unit) = format_bytes(gpu.used_memory as f64);
             let device = Gpu {
                 uuid : gpu.uuid,
                 name : gpu.name,
                 usage : gpu.utilization,
                 temp : gpu.temperature,
                 history : Vec::new(),
-                total_vram : total_vram,
-                total_unit : total_unit.to_string(),
-                used_vram : used_vram,
-                used_unit : used_unit.to_string(),
+                total_vram_bytes : gpu.total_memory,
+                used_vram_bytes : gpu.used_memory,
                 power : gpu.power_consumption,
             };
             self.gpus.push(device);
@@ -611,12 +494,10 @@ impl App {
                 continue;
             };
 
-            let (fresh_used, fresh_unit) = format_bytes(fresh.used_memory as f64);
             device.usage = fresh.utilization;
             device.temp = fresh.temperature;
             device.history.push((elapsed, device.usage));
-            device.used_vram = fresh_used;
-            device.used_unit = fresh_unit.to_string();
+            device.used_vram_bytes = fresh.used_memory;
             device.power = fresh.power_consumption;
             
             if device.history.len() >= MAX_SAMPLES {
@@ -636,7 +517,7 @@ impl App {
                 free: sys.free_swap() as f64, 
                 used: sys.used_swap() as f64, 
             },
-            prec_count : 1, 
+            prec_count : 2, 
         };
     }
 
@@ -655,48 +536,22 @@ impl App {
     fn processes(&mut self, sys : &mut System) {
         self.processes.clear();
         sys.refresh_processes(ProcessesToUpdate::All, true);
-        const KB: f64 = 1024.0;
-        const MB: f64 = 1024.0 * KB;
-        const GB: f64 = 1024.0 * MB;
 
         for (pid, process) in sys.processes() {
             let name = process.name().to_str().unwrap_or("unknown process name");
-
-            let mut mem = process.memory() as f64;
-            let mem_bytes = mem;
-
-            let mut virt_mem = process.virtual_memory() as f64;
-
-            let mut rd = process.disk_usage().read_bytes as f64;
-            let mut trd = process.disk_usage().total_read_bytes as f64;
-            let mut wte = process.disk_usage().written_bytes as f64;
-            let mut twte = process.disk_usage().total_written_bytes as f64;
-
-            let (memory, unit) = format_bytes(mem);
-            let (virt_memory, virt_unit) = format_bytes(virt_mem);
-            let (read, read_unit) = format_bytes(rd);
-            let (total_read, ttread_unit) = format_bytes(trd);
-            let (write, write_unit) = format_bytes(wte);
-            let (total_write, ttwrite_unit) = format_bytes(twte);
+            let disk_usage = process.disk_usage();
 
             self.processes.push(Process {
                 pid : process.pid(), 
                 parent_pid : process.parent().map(|id| id.to_string()).unwrap_or("No Parent PID".to_string()),
                 name: name.to_string(), 
-                memory_bytes : mem_bytes,
-                memory: memory, 
-                unit_mem : unit.to_string(), 
-                virtual_memory : virt_memory,
-                unit_virt : virt_unit.to_string(),
-                cpu_usage : process.cpu_usage() as f64,
-                read : read,
-                unit_read : read_unit.to_string(), 
-                total_read : total_read,
-                unit_ttread : ttread_unit.to_string(),
-                write : write,
-                unit_write : write_unit.to_string(),
-                total_write : total_write,
-                unit_ttwrite : ttwrite_unit.to_string(),
+                memory_bytes : process.memory(),
+                virtual_memory_bytes : process.virtual_memory(),
+                cpu_usage : process.cpu_usage(),
+                read_bytes : disk_usage.read_bytes,
+                total_read_bytes : disk_usage.total_read_bytes,
+                write_bytes : disk_usage.written_bytes,
+                total_write_bytes : disk_usage.total_written_bytes,
                 runtime : process.run_time(),
                 boot : process.start_time(),
                 status : process.status().to_string(),
@@ -706,9 +561,41 @@ impl App {
             });
         }
 
-        self.processes.sort_by(|a, b| {
-            b.memory_bytes.partial_cmp(&a.memory_bytes).unwrap()
-        });
+        self.processes.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+    }
+
+    fn detect_disks(&mut self, disks : &Disks) {
+        for disk in disks.iter() {
+            let to_push = Disko {
+                name : format!("{:?}", disk.name()),
+                kind : format!("{:?}", disk.kind()),
+                fs : format!("{:?}", disk.file_system()),
+                mnt : format!("{:?}", disk.mount_point()),
+                usage : DiskUsage {
+                    read_bytes : disk.usage().read_bytes, 
+                    total_read_bytes : disk.usage().total_read_bytes, 
+                    written_bytes : disk.usage().written_bytes, 
+                    total_written_bytes : disk.usage().total_written_bytes, 
+                },
+                capacity : disk.total_space(),
+                free : disk.available_space(),
+            };
+
+            self.disks.push(to_push);
+        }
+    }
+
+    fn update_disks(&mut self, disks : &mut Disks) {
+        for (pull_from, send_to) in disks.iter_mut().zip(self.disks.iter_mut()) {
+            pull_from.refresh();
+
+            send_to.usage.read_bytes = pull_from.usage().read_bytes;
+            send_to.usage.total_read_bytes = pull_from.usage().total_read_bytes;
+            send_to.usage.written_bytes = pull_from.usage().written_bytes;
+            send_to.usage.total_written_bytes = pull_from.usage().total_written_bytes;
+
+            send_to.free = pull_from.available_space();
+        }
     }
 
 }
@@ -780,14 +667,23 @@ impl App {
 
         
         let ram_top = Layout::default()
-        .direction(Horizontal)
-        .margin(0)
-        .constraints(vec![
-            Constraint::Max(20),
-            Constraint::Max(20),
-            Constraint::Fill(1),
+            .direction(Horizontal)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Max(20),
+                Constraint::Max(20),
+                Constraint::Fill(1),
             ])
             .split(ram_block[0]);
+
+        let ram_bottom = Layout::default()
+            .direction(Horizontal)
+            .margin(0)
+            .constraints(vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(75),
+            ])
+            .split(ram_block[1]);
         
         let used_inner = Layout::default()
             .direction(Horizontal)
@@ -908,6 +804,17 @@ impl App {
                 );
             frame.render_widget(cpu_usage_chart, cpu_block[0]);
             
+            let system_name_check = self.system.os.as_deref().unwrap_or("UNKNOWN OS").to_ascii_uppercase();
+            let system_color = if system_name_check.contains("WINDOWS") {
+                Color::LightBlue
+            } else if system_name_check.contains("LINUX") {
+                Color::Yellow
+            } else if system_name_check.contains("MACOS") {
+                Color::Gray
+            } else {
+                Color::LightCyan
+            };
+
             let sys_name = &self.system.os.as_deref().unwrap_or("Unknown OS").to_string();
             let sys_vers_raw = &self.system.version.as_deref().unwrap_or("Unknown OS Version").to_string();
             let sys_vers = sys_vers_raw
@@ -958,7 +865,7 @@ impl App {
                     Block::bordered()
                     .title("System Info")
                     .style(match self.device {
-                        DeviceSelector::Processor => {cpu_color},
+                        DeviceSelector::System => {system_color},
                         _ => {Color::White}
                     })
                 );
@@ -1120,18 +1027,18 @@ impl App {
         let ram_lines = vec![
             Line::from(vec![
                 Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
             ]),
             Line::from(vec![
                 Span::styled("Live: ", Style::default().bold()),
             ]),
             Line::from(vec![
                 Span::raw(" - In use: "),
-                Span::raw(format!("{:.prec$}{}",used, used_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
             ]),
             Line::from(vec![
                 Span::raw(" - Free: "),
-                Span::raw(format!("{:.prec$}{}",free, free_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
             ]),
         ];
 
@@ -1154,7 +1061,7 @@ impl App {
             swap_lines = vec![
             Line::from(vec![
                 Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
             ]),
             Line::from(vec![
                 Span::raw("System swap currently inactive... "),
@@ -1164,18 +1071,18 @@ impl App {
             swap_lines = vec![
             Line::from(vec![
                 Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$}{}",capacity, cap_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
             ]),
             Line::from(vec![
                 Span::styled("Live: ", Style::default().bold()),
             ]),
             Line::from(vec![
                 Span::raw(" - In use: "),
-                Span::raw(format!("{:.prec$}{}",used, used_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
             ]),
             Line::from(vec![
                 Span::raw(" - Free: "),
-                Span::raw(format!("{:.prec$}{}",free, free_unit, prec = self.memory.prec_count)),
+                Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
             ]),
         ];
         }
@@ -1256,6 +1163,9 @@ impl App {
                 );
             frame.render_widget(gpu_usage_chart, gpu_block[0]);
 
+            let (used_vram, used_unit) = format_bytes(selected_gpu.used_vram_bytes as f64);
+            let (total_vram, total_unit) = format_bytes(selected_gpu.total_vram_bytes as f64);
+
             let gpu_lines = vec![
                 Line::from(vec![
                     Span::styled("GPU: ", Style::default().bold()),
@@ -1267,9 +1177,9 @@ impl App {
                 ]),
                 Line::from(vec![
                     Span::styled("VRAM: ", Style::default().bold()),
-                    Span::raw(format!("{:.1}{}",selected_gpu.used_vram, selected_gpu.used_unit)),
+                    Span::raw(format!("{used_vram:.2} {used_unit}")),
                     Span::raw(" / "),
-                    Span::raw(format!("{:.1}{}",selected_gpu.total_vram, selected_gpu.total_unit)),
+                    Span::raw(format!("{total_vram:.2} {total_unit}")),
                 ]),
                 Line::from(vec![
                     Span::styled("Power Consumption: ", Style::default().bold()),
@@ -1345,6 +1255,13 @@ impl App {
                     let command = textwrap::wrap(&process.cmd, 60)
                         .join("\n");
 
+                    let (memory, unit_mem) = format_bytes(process.memory_bytes as f64);
+                    let (virtual_memory, unit_virt) = format_bytes(process.virtual_memory_bytes as f64);
+                    let (read, unit_read) = format_bytes(process.read_bytes as f64);
+                    let (total_read, unit_total_read) = format_bytes(process.total_read_bytes as f64);
+                    let (write, unit_write) = format_bytes(process.write_bytes as f64);
+                    let (total_write, unit_total_write) = format_bytes(process.total_write_bytes as f64);
+
                     let rows = vec![
                         Row::new(vec![
                             Cell::from("PID:"),
@@ -1368,8 +1285,8 @@ impl App {
                             Cell::from("Memory:"),
                             Cell::from(format!(
                                 "{:.2} {}",
-                                process.memory,
-                                process.unit_mem
+                                memory,
+                                unit_mem
                             )),
                         ]),
 
@@ -1377,17 +1294,17 @@ impl App {
                             Cell::from("Virtual:"),
                             Cell::from(format!(
                                 "{:.2} {}",
-                                process.virtual_memory,
-                                process.unit_virt
+                                virtual_memory,
+                                unit_virt
                             )),
                         ]),
 
                         Row::new(vec![
                             Cell::from("Reading:"),
                             Cell::from(format!(
-                                "{:.2} {}",
-                                process.read,
-                                process.unit_read
+                                "{:.2} {}/s",
+                                read,
+                                unit_read
                             )),
                         ]),
 
@@ -1395,17 +1312,17 @@ impl App {
                             Cell::from("Total Read:"),
                             Cell::from(format!(
                                 "{:.2} {}",
-                                process.total_read,
-                                process.unit_ttread
+                                total_read,
+                                unit_total_read
                             )),
                         ]),
 
                         Row::new(vec![
                             Cell::from("Writing:"),
                             Cell::from(format!(
-                                "{:.2} {}",
-                                process.write,
-                                process.unit_write
+                                "{:.2} {}/s",
+                                write,
+                                unit_write
                             )),
                         ]),
 
@@ -1413,8 +1330,8 @@ impl App {
                             Cell::from("Total Write:"),
                             Cell::from(format!(
                                 "{:.2} {}",
-                                process.total_write,
-                                process.unit_ttwrite
+                                total_write,
+                                unit_total_write
                             )),
                         ]),
 
@@ -1468,7 +1385,8 @@ impl App {
                 let processes: Vec<ListItem> = self.processes
                     .iter()
                     .map(|process| {
-                        let usage = format!("{:.1}{}", process.memory, process.unit_mem);
+                        let (memory, unit) = format_bytes(process.memory_bytes as f64);
+                        let usage = format!("{memory:.2} {unit}");
                         let name = process.name.clone();
         
                         let spaces = if self.mem_offset == 0 {
@@ -1509,7 +1427,7 @@ impl App {
         
         let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {PROCESS_COLOR}, _ => {Color::White}});
         frame.render_widget(outer_block, ram_right[1]);
-        let mut temp = self.processes.clone();
+        let mut temp: Vec<Process> = self.processes.clone();
         temp.sort_by(|a, b| {b.cpu_usage.total_cmp(&a.cpu_usage)});
         let mut lines = vec![
                     Line::from(vec![
@@ -1526,5 +1444,100 @@ impl App {
         }
         let top_cpu_block = Paragraph::new(lines);
         frame.render_widget(top_cpu_block, top_processes[0]);
+
+        let mut temp2: Vec<Process> = temp.clone();
+        temp2.sort_by(|a,b| {
+            let t_a = a.read_bytes + a.write_bytes;
+            let t_b = b.read_bytes + b.write_bytes;
+
+            t_b.cmp(&t_a)
+        });
+
+        let mut lines = vec![
+                    Line::from(vec![
+                        Span::styled("Top I/O: ", Style::default().bold()),
+                    ]),
+        ];
+        for (rank, process) in temp2.iter().take(5).enumerate() {
+            let pos = rank + 1;
+            let (io_rate, unit) = format_bytes((process.read_bytes + process.write_bytes) as f64);
+            let line = Line::from(vec![
+                        Span::styled(format!("{} - ", pos), Style::default().bold()),
+                        Span::raw(format!("{} : {:.2} {}/s", process.name, io_rate, unit))
+            ]);
+            lines.push(line);
+        }
+        let top_io_block = Paragraph::new(lines);
+        frame.render_widget(top_io_block, top_processes[1]);
+
+
+        //LOGO BLOCK
+        let logo_block = Block::bordered();
+        frame.render_widget(logo_block, ram_bottom[0]);
+        //
+
+
+        //DISK SECTION
+        const DISK_COLOR : Color = Color::Green;
+        let selected_disk = &self.disks[self.disk_selection];
+
+        let (read, r_unit) = format_bytes(selected_disk.usage.read_bytes as f64);
+        let (t_read, tr_unit) = format_bytes(selected_disk.usage.total_read_bytes as f64);
+        let (write, w_unit) = format_bytes(selected_disk.usage.written_bytes as f64);
+        let (t_write, tw_unit) = format_bytes(selected_disk.usage.total_written_bytes as f64);
+
+        let (cap, c_unit) = format_bytes(selected_disk.capacity as f64);
+        let (free, f_unit) = format_bytes(selected_disk.free as f64);
+
+        let disk_lines = vec![
+            Line::from(vec![
+                Span::styled("Name: ", Style::default().bold()),
+                Span::raw(selected_disk.name.replace('"', ""))
+            ]),
+            Line::from(vec![
+                Span::styled("Type: ", Style::default().bold()),
+                Span::raw(&selected_disk.kind)
+            ]),
+            Line::from(vec![
+                Span::styled("File System: ", Style::default().bold()),
+                Span::raw(selected_disk.fs.replace('"', ""))
+            ]),
+            Line::from(vec![
+                Span::styled("Mount Point: ", Style::default().bold()),
+                Span::raw(&selected_disk.mnt)
+            ]),
+            Line::from(vec![
+                Span::styled("Capacity: ", Style::default().bold()),
+                Span::raw(format!("{:.2} {}", free, f_unit)),
+                Span::raw(" / "),
+                Span::raw(format!("{:.2} {}", cap, c_unit)),
+            ]),
+            Line::from(vec![
+                Span::styled("Read: ", Style::default().bold()),
+                Span::raw(format!("{:.2} {}/s", read, r_unit)),
+                Span::raw(" (current) | "),
+                Span::raw(format!("{:.2} {}", t_read, tr_unit)),
+                Span::raw(" (total)"),
+            ]),
+            Line::from(vec![
+                Span::styled("Write: ", Style::default().bold()),
+                Span::raw(format!("{:.2} {}/s", write, w_unit)),
+                Span::raw(" (current) | "),
+                Span::raw(format!("{:.2} {}", t_write, tw_unit)),
+                Span::raw(" (total)"),
+            ]),
+        ];
+
+        let disk_block = Paragraph::new(disk_lines)
+            .block(Block::bordered()
+                .title("Disk Info")
+                .style(match self.device {
+                    DeviceSelector::Disk => {DISK_COLOR}
+                    _ => {Color::White}
+                })
+            )
+            .wrap(Wrap { trim: false });
+
+        frame.render_widget(disk_block, ram_bottom[1]);
     }
 }

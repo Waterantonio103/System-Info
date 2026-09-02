@@ -1,16 +1,18 @@
 #![allow(unused)]
 
 mod models;
+mod config;
 
 use models::*;
+use config::*;
 
 use std::{
-    ffi::OsStr, fmt::format, ops::Deref, thread, time::{Duration, Instant},
+    ffi::OsStr, fmt::format, net, ops::Deref, thread, time::{Duration, Instant},
 };
 
 use all_smi::{AllSmi, Result as SmiResult};
 use chrono::{DateTime, Local};
-use color_eyre::{Result, owo_colors::style};
+use color_eyre::{Result, eyre::Ok, owo_colors::style};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::{
     DefaultTerminal, Frame, layout::{
@@ -25,6 +27,7 @@ use textwrap::wrap;
 #[derive(Debug, Default)]
 struct App {
     state : AppState,
+    config : Config,
     device : DeviceSelector,
     system : Machine,
     cpu : CpuInfo,
@@ -51,7 +54,10 @@ enum AppState {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    ratatui::run(|terminal| App::default().run(terminal))
+    let mut app = App::default();
+    app.init_config()?;
+    
+    ratatui::run(|terminal| app.run(terminal))
 }
 
 fn format_bytes(bytes : f64) -> (f64, &'static str) {
@@ -110,16 +116,12 @@ fn date_fmt(boot : u64) -> String {
     boot_date.format("%m/%d/%Y at %I:%M:%S %p").to_string()
 }
 
-const QUIT_BIND : char = 'q';
-const CPU_BIND : char = 'c';
-const GPU_BIND : char = 'g';
-const PROCESS_BIND : char = 'p';
-const MEM_BIND : char = 'm';
-const DISK_BIND : char = 'd';
-const SYSTEM_BIND : char = 's';
-const NETWORK_BIND : char = 'n';
-
 impl App {
+    fn init_config(&mut self) -> Result<()> {
+        self.config = load_config()?;
+        Ok(())
+    }
+
     fn run(&mut self, terminal : &mut DefaultTerminal) -> Result<()> {
         let mut sys = System::new_all();
         let smi = AllSmi::new()?;
@@ -170,65 +172,73 @@ impl App {
     }
 
     fn handle_key_events(&mut self, key : KeyEvent) {
+        let quit_key: char = self.config.keybinds.quit;
+        let sys_key : char = self.config.keybinds.system;
+        let cpu_key : char = self.config.keybinds.processor;
+        let gpu_key : char = self.config.keybinds.graphics;
+        let disk_key : char = self.config.keybinds.disk;
+        let prc_key : char = self.config.keybinds.processes;
+        let mem_key : char = self.config.keybinds.memory;
+        let net_key : char = self.config.keybinds.network;
         match (&self.device, key.code) {
 
-            (DeviceSelector::Processor, KeyCode::Char(CPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Processor, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::Graphics, KeyCode::Char(GPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Graphics, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::Processes, KeyCode::Char(PROCESS_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Processes, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::Memory, KeyCode::Char(MEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Memory, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::Disk, KeyCode::Char(DISK_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Disk, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::System, KeyCode::Char(SYSTEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::System, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (DeviceSelector::Network, KeyCode::Char(NETWORK_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (DeviceSelector::Network, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
                 self.device = DeviceSelector::None;
             }
 
-            (_, KeyCode::Char(CPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
                 self.device = DeviceSelector::Processor;
             }
 
-            (_, KeyCode::Char(GPU_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
                 self.device = DeviceSelector::Graphics;
             }
 
-            (_, KeyCode::Char(PROCESS_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
                 self.device = DeviceSelector::Processes;
             }
 
-            (_, KeyCode::Char(MEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
                 self.device = DeviceSelector::Memory;
             }
 
-            (_, KeyCode::Char(DISK_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
                 self.device = DeviceSelector::Disk;
             }
 
-            (_, KeyCode::Char(SYSTEM_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
                 self.device = DeviceSelector::System;
             }
 
-            (_, KeyCode::Char(NETWORK_BIND)) if key.kind == event::KeyEventKind::Press => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
                 self.device = DeviceSelector::Network;
             }
 
-            (_, KeyCode::Char(QUIT_BIND)) => {
+            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == quit_key => {
                 self.state = AppState::Quitting;
             }
 
@@ -619,7 +629,7 @@ impl App {
                 Span::styled(format!("Selection: {}", self.device.name()), Style::default().bold()),
             ]),
             Line::from(vec![
-                Span::raw(format!("{}", self.device.keybind_description())),
+                Span::raw(format!("{}", self.device.keybind_description(&self.config))),
             ]),
         ];
         let top_bar = Paragraph::new(lines)
@@ -972,15 +982,17 @@ impl App {
 
 
         //RAM SECTORS
-        let mem_color = match self.device {
-            DeviceSelector::Memory => {Color::LightMagenta}
+        let mem_config_col = self.config.colors.memory;
+        let mem_color = Color::from(mem_config_col);
+        let mem_style = match self.device {
+            DeviceSelector::Memory => {mem_color}
             _ => {Color::White}
         };
         //Raw Mem
         let used_mem = ((self.memory.used / self.memory.capacity) * 100.0) as u64;
         let bar_mem = Bar::default()
             .value(used_mem)
-            .style(mem_color)
+            .style(mem_style)
             .label(Line::from(format!("{used_mem}%")));
 
         let used_mem_chart = BarChart::vertical(vec![bar_mem])
@@ -991,7 +1003,7 @@ impl App {
     
         let bar_chart_outer = Block::bordered()
             .title("RAM USAGE (%)")
-            .style(mem_color);
+            .style(mem_style);
         frame.render_widget(bar_chart_outer, ram_top[0]);
 
         //Swap
@@ -999,13 +1011,13 @@ impl App {
         let title = String::from("SWAP USAGE (%)");
         if self.memory.swap.used == 0.0 {
             let no_swap_block = Paragraph::new("Swap inactive...")
-                .block(Block::bordered().title(title).style(mem_color));
+                .block(Block::bordered().title(title).style(mem_style));
             frame.render_widget(no_swap_block, ram_top[1]);
         } else {
             let swap_used = ((self.memory.swap.used / self.memory.swap.capacity) * 100.0) as u64;
             let bar_swap = Bar::default()
                 .value(swap_used)
-                .style(mem_color)
+                .style(mem_style)
                 .label(Line::from(format!("{swap_used}%")));
     
             let used_swap_chart = BarChart::vertical(vec![bar_swap])
@@ -1016,7 +1028,7 @@ impl App {
         
             let bar_chart_outer = Block::bordered()
                 .title(title)
-                .style(mem_color);
+                .style(mem_style);
             frame.render_widget(bar_chart_outer, ram_top[1]);
         }
 
@@ -1046,7 +1058,7 @@ impl App {
             .wrap(Wrap { trim: false })
             .block(Block::bordered()
                 .title("RAM")
-                .style(mem_color)
+                .style(mem_style)
             );
         frame.render_widget(ram_info, ram_swap[0]);
 
@@ -1091,7 +1103,7 @@ impl App {
             .wrap(Wrap { trim: false })
             .block(Block::bordered()
                 .title("SWAP")
-                .style(mem_color)
+                .style(mem_style)
             );
         frame.render_widget(swap_info, ram_swap[1]);
 
@@ -1245,7 +1257,8 @@ impl App {
 
 
         //PROCESSES SECTORS
-        const PROCESS_COLOR : Color = Color::LightBlue;
+        let prc_config_col = self.config.colors.processes;
+        let prc_color = Color::from(prc_config_col);
         match self.process_selection {
             Some(pid) => {
                 if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
@@ -1375,7 +1388,7 @@ impl App {
 
                     let table = Table::new(rows, widths)
                         .style(Style::default().fg(Color::White))
-                        .block(Block::bordered().style(Style::default().fg(PROCESS_COLOR)).title(process.name.clone()));
+                        .block(Block::bordered().style(Style::default().fg(prc_color)).title(process.name.clone()));
 
                     frame.render_widget(table, large_lower[1]);
                 }
@@ -1414,7 +1427,7 @@ impl App {
                     .block(Block::bordered()
                         .title("Processes")
                         .style(match self.device {
-                            DeviceSelector::Processes => {PROCESS_COLOR},
+                            DeviceSelector::Processes => {prc_color},
                             _ => {Color::White}
                         })
                     )
@@ -1425,7 +1438,7 @@ impl App {
             }
         }
         
-        let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {PROCESS_COLOR}, _ => {Color::White}});
+        let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {prc_color}, _ => {Color::White}});
         frame.render_widget(outer_block, ram_right[1]);
         let mut temp: Vec<Process> = self.processes.clone();
         temp.sort_by(|a, b| {b.cpu_usage.total_cmp(&a.cpu_usage)});
@@ -1478,7 +1491,8 @@ impl App {
 
 
         //DISK SECTION
-        const DISK_COLOR : Color = Color::Green;
+        let disk_config_col = self.config.colors.disk;
+        let disk_color = Color::from(disk_config_col);
         let selected_disk = &self.disks[self.disk_selection];
 
         let (read, r_unit) = format_bytes(selected_disk.usage.read_bytes as f64);
@@ -1532,7 +1546,7 @@ impl App {
             .block(Block::bordered()
                 .title("Disk Info")
                 .style(match self.device {
-                    DeviceSelector::Disk => {DISK_COLOR}
+                    DeviceSelector::Disk => {disk_color}
                     _ => {Color::White}
                 })
             )

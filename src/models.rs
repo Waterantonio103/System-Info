@@ -1,5 +1,7 @@
 use sysinfo::{DiskUsage, Pid};
 
+use crate::config::Config;
+
 #[derive(Debug, Default, PartialEq)]
 pub enum DeviceSelector {
     #[default]
@@ -26,16 +28,47 @@ impl DeviceSelector {
             DeviceSelector::Network => String::from("Networks"),
         }
     }
-    pub fn keybind_description(&self) -> String {
+    pub fn keybind_description(&self, config: &Config) -> String {
         match self {
-            DeviceSelector::None => String::from("Quit (q) | System (s) | CPU (c) | GPU (g) | Disk (d) | Processes (p) | Memory (m) | Network (n)"),
-            DeviceSelector::System => String::from("Quit (q) | Back (Esc / s)"),
-            DeviceSelector::Processor => String::from("Quit (q) | Back (Esc / c) | Next CPU (Right)"),
-            DeviceSelector::Graphics => String::from("Quit (q) | Back (Esc / g) | Next GPU (Right)"),
-            DeviceSelector::Disk => String::from("Quit (q) | Back (Esc / d)"),
-            DeviceSelector::Processes => String::from("Quit (q) | Back (Esc / p) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)"),
-            DeviceSelector::Memory => String::from("Quit (q) | Back (Esc / m) | Precision (+/-)"),
-            DeviceSelector::Network => String::from("Quit (q) | Back (Esc / n)"),
+            DeviceSelector::None => format!(
+                "Quit ({}) | System ({}) | CPU ({}) | GPU ({}) | Disk ({}) | Processes ({}) | Memory ({}) | Network ({})",
+                config.keybinds.quit,
+                config.keybinds.system,
+                config.keybinds.processor,
+                config.keybinds.graphics,
+                config.keybinds.disk,
+                config.keybinds.processes,
+                config.keybinds.memory,
+                config.keybinds.network,
+            ),
+            DeviceSelector::System => format!(
+                "Quit ({}) | Back (Esc / {})",
+                config.keybinds.quit, config.keybinds.system
+            ),
+            DeviceSelector::Processor => format!(
+                "Quit ({}) | Back (Esc / {}) | Next CPU (Right)",
+                config.keybinds.quit, config.keybinds.processor
+            ),
+            DeviceSelector::Graphics => format!(
+                "Quit ({}) | Back (Esc / {}) | Next GPU (Right)",
+                config.keybinds.quit, config.keybinds.graphics
+            ),
+            DeviceSelector::Disk => format!(
+                "Quit ({}) | Back (Esc / {})",
+                config.keybinds.quit, config.keybinds.disk
+            ),
+            DeviceSelector::Processes => format!(
+                "Quit ({}) | Back (Esc / {}) | Navigate (Up/Down) | Inspect (Enter) | Previous/Next (Left/Right)",
+                config.keybinds.quit, config.keybinds.processes
+            ),
+            DeviceSelector::Memory => format!(
+                "Quit ({}) | Back (Esc / {}) | Precision (+/-)",
+                config.keybinds.quit, config.keybinds.memory
+            ),
+            DeviceSelector::Network => format!(
+                "Quit ({}) | Back (Esc / {})",
+                config.keybinds.quit, config.keybinds.network
+            ),
         }
     }
 }

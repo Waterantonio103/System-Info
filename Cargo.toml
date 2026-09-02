@@ -1,5 +1,5 @@
 [package]
-name = "system-info"
+name = "system-watch"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,6 +8,9 @@ all-smi = { git = "https://github.com/Waterantonio103/all-smi-0.25-patched.git",
 chrono = "0.4.45"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
+directories = "6.0.0"
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+serde = { version = "1.0.229", features = ["derive"] }
 sysinfo = "0.39.6"
 textwrap = "0.16.2"
+toml = "1.1.4"

@@ -10,7 +10,9 @@ use std::{
     ffi::OsStr, fmt::format, net, ops::Deref, thread, time::{Duration, Instant},
 };
 
-use all_smi::{AllSmi, Result as SmiResult, utils::command::new_command};
+use strum::IntoEnumIterator;
+
+use all_smi::{AllSmi, Result as SmiResult, network::ssh_transport::StrictHostKey::No, utils::command::new_command};
 use chrono::{DateTime, Local};
 use color_eyre::{Result, eyre::Ok, owo_colors::style};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -31,6 +33,9 @@ struct App {
     cfg_state : ConfigState,
     config_key_state : ListState,
     config_col_state : ListState,
+    color_target : Option<ColorTarget>,
+    config_edit_col_state : ListState,
+    color_selection : ConfigColor,
     device : DeviceSelector,
     system : Machine,
     cpu : CpuInfo,
@@ -62,6 +67,15 @@ enum ConfigState {
     None,
     Keybinds,
     Colors,
+    ColorPicker,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ColorTarget {
+    Disk,
+    Processes,
+    Memory,
+    Network,
 }
 
 fn main() -> Result<()> {
@@ -458,6 +472,48 @@ impl App {
                     self.config_col_state.select(Some(next));
                 }
 
+                (ConfigState::Colors, KeyCode::Enter) if key.kind == event::KeyEventKind::Press => {
+                    if let Some(index) = self.config_col_state.selected() {
+                        self.color_target = match index {
+                            0 => Some(ColorTarget::Disk),
+                            1 => Some(ColorTarget::Processes),
+                            2 => Some(ColorTarget::Memory),
+                            3 => Some(ColorTarget::Network),
+                            _ => None,
+                        };
+                    self.cfg_state = ConfigState::ColorPicker;
+                    self.config_edit_col_state.select(Some(0));
+                        // self.color_selection = self.config.colors.select(index); -- How to get selected color in wheel
+                    }
+                }
+
+                (ConfigState::ColorPicker, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
+                    let last = ConfigColor::len() - 1;
+
+                    let previous = match self.config_edit_col_state.selected() {
+                        Some(0) | None => last,
+                        Some(index) => index - 1,
+                    };
+
+                    self.config_edit_col_state.select(Some(previous));
+                }
+
+                (ConfigState::ColorPicker, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
+                    let last = ConfigColor::len() - 1;
+
+                    let next = match self.config_edit_col_state.selected() {
+                        Some(index) if index >= last => 0,
+                        Some(index) => index + 1,
+                        None => 0,
+                    };
+
+                    self.config_edit_col_state.select(Some(next));
+                }
+
+                (ConfigState::ColorPicker, KeyCode::Enter) if key.kind == event::KeyEventKind::Press => {
+                    
+                }
+
                 (_ ,KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
                     self.state = AppState::Running;
                 }
@@ -744,16 +800,35 @@ impl App {
                 .highlight_symbol("> ");
             frame.render_stateful_widget(list, largest[0], &mut self.config_key_state);
 
-            let mut colors_list: Vec<ListItem> = Vec::new();
-            for (name, color) in self.config.colors.iter() {
-                colors_list.push(ListItem::new(format!("{name} => {color:?}")));
-            }
-            let list = List::new(colors_list)
-                .block(Block::bordered().title("Colors"))
-                .highlight_style(Modifier::REVERSED)
-                .highlight_symbol("> ");
-            frame.render_stateful_widget(list, largest[1], &mut self.config_col_state);
+            
 
+            let selected_col_field = self.color_target;
+            match selected_col_field {
+                Some(device) => {
+                    let color_items: Vec<ListItem> = ConfigColor::iter()
+                        .map(|color| ListItem::new(format!("{color:?}")))
+                        .collect();
+
+                    let color_list = List::new(color_items)
+                        .block(Block::bordered().title(format!("Change color for: {device:?}")))
+                        .highlight_style(Modifier::REVERSED)
+                        .highlight_symbol("> ");
+                    frame.render_stateful_widget(color_list, largest[1], &mut self.config_edit_col_state);
+                },
+                None => {
+                    let mut col_configs_list: Vec<ListItem> = Vec::new();
+                    for (name, color) in self.config.colors.iter() {
+                        col_configs_list.push(ListItem::new(format!("{name} => {color:?}")));
+                    }
+                    let list = List::new(col_configs_list)
+                        .block(Block::bordered().title("Colors"))
+                        .highlight_style(Modifier::REVERSED)
+                        .highlight_symbol("> ");
+                    frame.render_stateful_widget(list, largest[1], &mut self.config_col_state);
+                }
+            }
+            let selected_color : Color = self.color_selection.into();
+            
 
         } else {
 

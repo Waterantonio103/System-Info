@@ -128,10 +128,19 @@ impl Colors {
     pub fn len(&self) -> usize {
         self.iter().count()
     }
+
+    pub fn select(&self, index: usize) -> ConfigColor {
+        let selection = self.iter().nth(index);
+        match selection {
+            Some(color) => {return color.1;},
+            None => {return ConfigColor::White}
+        }
+    }
 }
 
 #[derive(
     Debug,
+    Default,
     Clone,
     Copy,
     Serialize,
@@ -139,6 +148,7 @@ impl Colors {
 )]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigColor {
+    #[default]
     Reset,
     Black,
     Red,
@@ -183,5 +193,33 @@ impl From<ConfigColor> for Color {
             ConfigColor::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
             ConfigColor::Indexed(index) => Color::Indexed(index),
         }
+    }
+}
+
+impl ConfigColor {
+    pub fn iter() -> impl Iterator<Item = Self> {
+        [
+            Self::Reset,
+            Self::Black,
+            Self::Red,
+            Self::Green,
+            Self::Yellow,
+            Self::Blue,
+            Self::Magenta,
+            Self::Cyan,
+            Self::Gray,
+            Self::DarkGray,
+            Self::LightRed,
+            Self::LightGreen,
+            Self::LightYellow,
+            Self::LightBlue,
+            Self::LightMagenta,
+            Self::LightCyan,
+            Self::White,
+        ]
+        .into_iter()
+    }
+    pub fn len() -> usize {
+        ConfigColor::iter().count()
     }
 }

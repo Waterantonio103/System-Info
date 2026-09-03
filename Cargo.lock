@@ -4838,6 +4838,7 @@ dependencies = [
  "eyre",
  "ratatui",
  "serde",
+ "strum",
  "sysinfo",
  "textwrap",
  "toml",

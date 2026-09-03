@@ -1,6 +1,6 @@
-mod defaults;
+pub mod defaults;
 
-use defaults::*;
+pub use defaults::*;
 use std::{error, fs::{self, File}, io, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use directories::ProjectDirs;

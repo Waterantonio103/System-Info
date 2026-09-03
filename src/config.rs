@@ -1,7 +1,7 @@
 mod defaults;
 
 use defaults::*;
-use std::{fs::{self, File}, io, path::PathBuf};
+use std::{error, fs::{self, File}, io, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use directories::ProjectDirs;
 use color_eyre::{
@@ -26,7 +26,7 @@ impl Default for Config {
     }
 }
 
-pub fn load_config() -> Result<Config> {
+pub fn load_config() -> eyre::Result<Config> {
     let project_dirs = ProjectDirs::from(
         "com",
         "waterantonio103",
@@ -43,25 +43,27 @@ pub fn load_config() -> Result<Config> {
     fs::create_dir_all(config_dir)?;
 
     if !config_path.exists() {
-        let config = Config::default();
-        let contents = toml::to_string_pretty(&config)?;
-
-        fs::write(&config_path, contents)?;
-
-        return Ok(config);
+        return Ok(write_cfg(&config_path)?);
     }
 
     let contents = fs::read_to_string(&config_path)?;
+    dbg!(&contents);
 
     let config = if contents.trim().is_empty() {
-        let config = Config::default();
-        let contents = toml::to_string_pretty(&config)?;
-
-        fs::write(&config_path, contents)?;
-
-        config
+        write_cfg(&config_path)?
     } else {
-        toml::from_str(&contents)?
+        match toml::from_str::<Config>(&contents) {
+            Ok(cfg) => {
+                let updated = toml::to_string_pretty(&cfg)?;
+
+                if updated != contents {
+                    fs::write(&config_path, updated)?;
+                }
+
+                cfg
+            }
+            Err(_) => write_cfg(&config_path)?,
+        }
     };
 
     if let Err(errors) = config.keybinds.validate() {
@@ -84,5 +86,15 @@ pub fn load_config() -> Result<Config> {
 
     Ok(config)
 }
+
+fn write_cfg(path : &PathBuf) -> eyre::Result<Config> {
+    let config = Config::default();
+    let contents = toml::to_string_pretty(&config)?;
+
+    fs::write(path, contents)?;
+
+    Ok(config)
+}
+
 
 

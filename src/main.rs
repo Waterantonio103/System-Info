@@ -10,7 +10,7 @@ use std::{
     ffi::OsStr, fmt::format, net, ops::Deref, thread, time::{Duration, Instant},
 };
 
-use all_smi::{AllSmi, Result as SmiResult};
+use all_smi::{AllSmi, Result as SmiResult, utils::command::new_command};
 use chrono::{DateTime, Local};
 use color_eyre::{Result, eyre::Ok, owo_colors::style};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -28,6 +28,9 @@ use textwrap::wrap;
 struct App {
     state : AppState,
     config : Config,
+    cfg_state : ConfigState,
+    config_key_state : ListState,
+    config_col_state : ListState,
     device : DeviceSelector,
     system : Machine,
     cpu : CpuInfo,
@@ -50,6 +53,15 @@ enum AppState {
     Running,
     Started,
     Quitting,
+    Config,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum ConfigState {
+    #[default]
+    None,
+    Keybinds,
+    Colors,
 }
 
 fn main() -> Result<()> {
@@ -104,7 +116,6 @@ fn time_fmt(seconds : u64) -> String {
         let secs = seconds % MIN_IN_SECS;
         format!("{:02}m{:02}s",minutes,secs)
     };
-    
     clock
 }
 
@@ -180,204 +191,298 @@ impl App {
         let prc_key : char = self.config.keybinds.processes;
         let mem_key : char = self.config.keybinds.memory;
         let net_key : char = self.config.keybinds.network;
-        match (&self.device, key.code) {
-
-            (DeviceSelector::Processor, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::Graphics, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::Processes, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::Memory, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::Disk, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::System, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (DeviceSelector::Network, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
-                self.device = DeviceSelector::None;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
-                self.device = DeviceSelector::Processor;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
-                self.device = DeviceSelector::Graphics;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
-                self.device = DeviceSelector::Processes;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
-                self.device = DeviceSelector::Memory;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
-                self.device = DeviceSelector::Disk;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
-                self.device = DeviceSelector::System;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
-                self.device = DeviceSelector::Network;
-            }
-
-            (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == quit_key => {
-                self.state = AppState::Quitting;
-            }
-
-            (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
-                self.device = DeviceSelector::None;
-                self.process_selection = None;
-            }
-
-            (DeviceSelector::Processor, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
-                if !self.cpus.is_empty() {
-                    self.cpu_selection = (self.cpu_selection + 1) % self.cpus.len();
+        let cfg_key : char = self.config.keybinds.config;
+        if self.state == AppState::Running {
+            match (&self.device, key.code) {
+    
+                (DeviceSelector::Processor, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
+                    self.device = DeviceSelector::None;
                 }
-            }
-
-            (DeviceSelector::Processor, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
-                if !self.cpus.is_empty() {
-                    let previous = if self.cpu_selection == 0 {
-                        self.cpu_selection = self.cpus.len() - 1;
+    
+                (DeviceSelector::Graphics, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::Memory, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::Disk, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::System, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::Network, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
+                    self.device = DeviceSelector::None;
+                }
+    
+                (DeviceSelector::Processor, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                    if !self.cpus.is_empty() {
+                        self.cpu_selection = (self.cpu_selection + 1) % self.cpus.len();
+                    }
+                }
+    
+                (DeviceSelector::Processor, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                    if !self.cpus.is_empty() {
+                        let previous = if self.cpu_selection == 0 {
+                            self.cpu_selection = self.cpus.len() - 1;
+                        } else {
+                            self.cpu_selection = (self.cpu_selection - 1) % self.cpus.len();
+                        };
+                    }
+                }
+    
+                (DeviceSelector::Graphics, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                    if !self.gpus.is_empty() {
+                        self.gpu_selection = (self.gpu_selection + 1) % self.gpus.len();
+                    }
+                }
+    
+                (DeviceSelector::Graphics, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                    if !self.gpus.is_empty() {
+                        let previous = if self.gpu_selection == 0 {
+                            self.gpu_selection = self.gpus.len() - 1;
+                        } else {
+                            self.gpu_selection = (self.gpu_selection - 1) % self.gpus.len();
+                        };
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
+                    if !self.processes.is_empty() {
+                        let last = self.processes.len() - 1;
+    
+                        let previous = match self.list_state.selected() {
+                            Some(0) | None => last,
+                            Some(index) => index - 1,
+                        };
+    
+                        self.list_state.select(Some(previous));
+                        self.mem_offset = previous + 1;
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
+                    if !self.processes.is_empty() {
+                        let last = self.processes.len() - 1;
+    
+                        let next = match self.list_state.selected() {
+                            Some(index) if index >= last => 0,
+                            Some(index) => index + 1,
+                            None => 0,
+                        };
+    
+                        self.list_state.select(Some(next));
+                        self.mem_offset = next + 1;
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Enter) if key.kind == event::KeyEventKind::Press => {
+                    if let Some(index) = self.list_state.selected() {
+                        self.process_selection = self.processes
+                            .get(index)
+                            .map(|process| process.pid);
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                    if self.process_selection.is_some() && !self.processes.is_empty() {
+                        let current = self.list_state.selected().unwrap_or_default();
+                        let next = current.saturating_add(1);
+                        
+                        self.list_state.select(Some(next));
+                        self.process_selection = Some(self.processes[next].pid);
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                    if self.process_selection.is_some() && !self.processes.is_empty() {
+                        let current = self.list_state.selected().unwrap_or_default();
+                        let previous = current.saturating_sub(1);
+                        
+                        self.list_state.select(Some(previous));
+                        self.process_selection = Some(self.processes[previous].pid);
+                    }
+                }
+    
+                (DeviceSelector::Processes, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                    if self.process_selection.is_some() {
+                        self.process_selection = None
                     } else {
-                        self.cpu_selection = (self.cpu_selection - 1) % self.cpus.len();
-                    };
+                        self.device = DeviceSelector::None
+                    }
                 }
-            }
-
-            (DeviceSelector::Graphics, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
-                if !self.gpus.is_empty() {
-                    self.gpu_selection = (self.gpu_selection + 1) % self.gpus.len();
-                }
-            }
-
-            (DeviceSelector::Graphics, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
-                if !self.gpus.is_empty() {
-                    let previous = if self.gpu_selection == 0 {
-                        self.gpu_selection = self.gpus.len() - 1;
+    
+                (DeviceSelector::Memory, KeyCode::Char('+')) if key.kind == event::KeyEventKind::Press => {
+                    if self.memory.prec_count < 4 {
+                        self.memory.prec_count += 1;
                     } else {
-                        self.gpu_selection = (self.gpu_selection - 1) % self.gpus.len();
-                    };
+                        self.memory.prec_count = 0;
+                    }
                 }
+    
+                (DeviceSelector::Memory, KeyCode::Char('-')) if key.kind == event::KeyEventKind::Press => {
+                    if self.memory.prec_count == 0 {
+                        self.memory.prec_count = 3;
+                    } else {
+                        self.memory.prec_count -= 1;
+                    }
+                }
+    
+                (DeviceSelector::Disk, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
+                    if !self.disks.is_empty() {
+                        self.disk_selection = (self.disk_selection + 1) % self.disks.len();
+                    }
+                }
+    
+                (DeviceSelector::Disk, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
+                    if !self.disks.is_empty() {
+                        let previous = if self.disk_selection == 0 {
+                            self.disk_selection = self.disks.len() - 1;
+                        } else {
+                            self.disk_selection = (self.disk_selection - 1) % self.disks.len();
+                        };
+                    }
+                }
+
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cpu_key => {
+                    self.device = DeviceSelector::Processor;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == gpu_key => {
+                    self.device = DeviceSelector::Graphics;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == prc_key => {
+                    self.device = DeviceSelector::Processes;
+                    if !self.processes.is_empty() {
+                        self.list_state.select(Some(0));
+                    }
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == mem_key => {
+                    self.device = DeviceSelector::Memory;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == disk_key => {
+                    self.device = DeviceSelector::Disk;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == sys_key => {
+                    self.device = DeviceSelector::System;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == net_key => {
+                    self.device = DeviceSelector::Network;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == quit_key => {
+                    self.state = AppState::Quitting;
+                }
+    
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == cfg_key => {
+                    self.state = AppState::Config;
+                }
+    
+                (_, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                    self.device = DeviceSelector::None;
+                    self.process_selection = None;
+                }
+    
+                _ => {}
             }
 
-            (DeviceSelector::Processes, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
-                if !self.processes.is_empty() {
-                    let last = self.processes.len() - 1;
 
-                    let previous = match self.list_state.selected() {
+        } else if self.state == AppState::Config {
+
+
+            match (&self.cfg_state, key.code) {
+                (ConfigState::Keybinds, KeyCode::Char('k')) if key.kind == event::KeyEventKind::Press => {
+                    self.cfg_state = ConfigState::None;
+                }
+
+                (ConfigState::Keybinds, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
+                    let last = self.config.keybinds.len() - 1;
+
+                    let previous = match self.config_key_state.selected() {
                         Some(0) | None => last,
                         Some(index) => index - 1,
                     };
 
-                    self.list_state.select(Some(previous));
-                    self.mem_offset = previous + 1;
+                    self.config_key_state.select(Some(previous));
                 }
-            }
 
-            (DeviceSelector::Processes, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
-                if !self.processes.is_empty() {
-                    let last = self.processes.len() - 1;
+                (ConfigState::Keybinds, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
+                    let last = self.config.keybinds.len() - 1;
 
-                    let next = match self.list_state.selected() {
+                    let next = match self.config_key_state.selected() {
                         Some(index) if index >= last => 0,
                         Some(index) => index + 1,
                         None => 0,
                     };
 
-                    self.list_state.select(Some(next));
-                    self.mem_offset = next + 1;
+                    self.config_key_state.select(Some(next));
                 }
-            }
 
-            (DeviceSelector::Processes, KeyCode::Enter) if key.kind == event::KeyEventKind::Press => {
-                if let Some(index) = self.list_state.selected() {
-                    self.process_selection = self.processes
-                        .get(index)
-                        .map(|process| process.pid);
+                (ConfigState::Colors, KeyCode::Char('c')) if key.kind == event::KeyEventKind::Press => {
+                    self.cfg_state = ConfigState::None;
                 }
-            }
 
-            (DeviceSelector::Processes, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
-                if self.process_selection.is_some() && !self.processes.is_empty() {
-                    let current = self.list_state.selected().unwrap_or_default();
-                    let next = current.saturating_add(1);
-                    
-                    self.list_state.select(Some(next));
-                    self.process_selection = Some(self.processes[next].pid);
-                }
-            }
+                (ConfigState::Colors, KeyCode::Up) if key.kind == event::KeyEventKind::Press => {
+                    let last = self.config.colors.len() - 1;
 
-            (DeviceSelector::Processes, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
-                if self.process_selection.is_some() && !self.processes.is_empty() {
-                    let current = self.list_state.selected().unwrap_or_default();
-                    let previous = current.saturating_sub(1);
-                    
-                    self.list_state.select(Some(previous));
-                    self.process_selection = Some(self.processes[previous].pid);
-                }
-            }
-
-            (DeviceSelector::Processes, KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
-                if self.process_selection.is_some() {
-                    self.process_selection = None
-                } else {
-                    self.device = DeviceSelector::None
-                }
-            }
-
-            (DeviceSelector::Memory, KeyCode::Char('+')) if key.kind == event::KeyEventKind::Press => {
-                if self.memory.prec_count < 4 {
-                    self.memory.prec_count += 1;
-                } else {
-                    self.memory.prec_count = 0;
-                }
-            }
-
-            (DeviceSelector::Memory, KeyCode::Char('-')) if key.kind == event::KeyEventKind::Press => {
-                if self.memory.prec_count == 0 {
-                    self.memory.prec_count = 3;
-                } else {
-                    self.memory.prec_count -= 1;
-                }
-            }
-
-            (DeviceSelector::Disk, KeyCode::Right) if key.kind == event::KeyEventKind::Press => {
-                if !self.disks.is_empty() {
-                    self.disk_selection = (self.disk_selection + 1) % self.disks.len();
-                }
-            }
-
-            (DeviceSelector::Disk, KeyCode::Left) if key.kind == event::KeyEventKind::Press => {
-                if !self.disks.is_empty() {
-                    let previous = if self.disk_selection == 0 {
-                        self.disk_selection = self.disks.len() - 1;
-                    } else {
-                        self.disk_selection = (self.disk_selection - 1) % self.disks.len();
+                    let previous = match self.config_col_state.selected() {
+                        Some(0) | None => last,
+                        Some(index) => index - 1,
                     };
+
+                    self.config_col_state.select(Some(previous));
                 }
+
+                (ConfigState::Colors, KeyCode::Down) if key.kind == event::KeyEventKind::Press => {
+                    let last = self.config.colors.len() - 1;
+
+                    let next = match self.config_col_state.selected() {
+                        Some(index) if index >= last => 0,
+                        Some(index) => index + 1,
+                        None => 0,
+                    };
+
+                    self.config_col_state.select(Some(next));
+                }
+
+                (_ ,KeyCode::Esc) if key.kind == event::KeyEventKind::Press => {
+                    self.state = AppState::Running;
+                }
+
+                (_, KeyCode::Char(k)) if key.kind == event::KeyEventKind::Press && k == quit_key => {
+                    self.state = AppState::Quitting;
+                }
+
+                (_, KeyCode::Char('k')) if key.kind == event::KeyEventKind::Press => {
+                    self.cfg_state = ConfigState::Keybinds;
+                    self.config_key_state.select(Some(0));
+                }
+
+                (_, KeyCode::Char('c')) if key.kind == event::KeyEventKind::Press => {
+                    self.cfg_state = ConfigState::Colors;
+                    self.config_col_state.select(Some(0));
+                }
+
+    
+                _ => {}
             }
 
-            _ => {}
+
         }
+
     }
 
     fn update_sys(&mut self, sys : &System) {
@@ -614,944 +719,985 @@ impl App {
     fn render(&mut self, frame : &mut Frame) {
         let area = frame.area();
 
-        let largest = Layout::default()
-            .direction(Vertical)
-            .margin(1)
-            .constraints(vec![
-                Constraint::Percentage(4),
-                Constraint::Percentage(49),
-                Constraint::Percentage(47),
-            ])
-            .split(area);
+        if self.state == AppState::Config {
 
-        let lines = vec![
-            Line::from(vec![
-                Span::styled(format!("Selection: {}", self.device.name()), Style::default().bold()),
-            ]),
-            Line::from(vec![
-                Span::raw(format!("{}", self.device.keybind_description(&self.config))),
-            ]),
-        ];
-        let top_bar = Paragraph::new(lines)
-            .alignment(Alignment::Center);
-
-        frame.render_widget(top_bar, largest[0]);
-
-        let large_upper = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .split(largest[1]);
-
-        let large_lower = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .split(largest[2]);
-
-        //CPU BLOCK
-        let cpu_block = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
-            .split(large_upper[0]);
-
-        //RAM BLOCK
-        let ram_block = Layout::default()
-            .direction(Vertical)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
-            .split(large_upper[1]);
-
-        
-        let ram_top = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Max(20),
-                Constraint::Max(20),
-                Constraint::Fill(1),
-            ])
-            .split(ram_block[0]);
-
-        let ram_bottom = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(25),
-                Constraint::Percentage(75),
-            ])
-            .split(ram_block[1]);
-        
-        let used_inner = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(13),
-                Constraint::Percentage(80),
-                Constraint::Percentage(7),
-            ])
-            .split(ram_top[0]);
-
-        let ram_right = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(40),
-                Constraint::Percentage(60),
-            ])
-            .split(ram_top[2]);
-
-        let ram_swap = Layout::default()
-            .direction(Vertical)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .split(ram_right[0]);
-
-        let top_processes = Layout::default()
-            .direction(Vertical)
-            .margin(1)
-            .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .split(ram_right[1]);
-
-        let used_swap_inner = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(13),
-                Constraint::Percentage(80),
-                Constraint::Percentage(7),
-            ])
-            .split(ram_top[1]);
-
-        //GPU BLOCK
-        let gpu_block = Layout::default()
-            .direction(Horizontal)
-            .margin(0)
-            .constraints(vec![
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
-            .split(large_lower[0]);
-
-        //CPU SECTORS
-
-        let cpu_index = self.cpu_selection.min(self.cpus.len().saturating_sub(1));
-        if let Some(selected_cpu) = self.cpus.get(cpu_index) {
-            let cpu_color = if self.cpu.brand.to_uppercase().contains("AMD") {
-                Color::Red
-            } else if self.cpu.brand.to_uppercase().contains("INTEL") {
-                Color::Blue
-            } else {
-                Color::White
-            };
-    
-            let latest_time = selected_cpu
-                    .history
-                    .last()
-                    .map(|(time, _)|*time)
-                    .unwrap_or(0.0);
-    
-            let x_end = latest_time.max(60.0);
-            let x_start = x_end - 60.0;
-            let x_middle = (x_start + x_end) / 2.0;
-    
-            let cpu_name = if self.cpu_selection == 0 {
-                "GLOBAL CPU"
-            } else {
-                selected_cpu.thread.as_str()
-            };
-            let cpu_usage_dataset = Dataset::default()
-                    .name(cpu_name)
-                    .marker(Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(cpu_color))
-                    .data(&selected_cpu.history);
-    
-            let cpu_usage_chart = Chart::new(vec![cpu_usage_dataset])
-                .block(Block::bordered()
-                    .title("CPU")
-                    .style(match self.device {
-                        DeviceSelector::Processor => {cpu_color}
-                        _ => {Color::White}
-                    })
-                )
-                .x_axis(
-                    Axis::default()
-                        .title("Time(s)")
-                        .bounds([x_start, x_end])
-                        .labels([
-                            format!("{x_start:.0}s"),
-                            format!("{x_middle:.0}s"),
-                            format!("{x_end:.0}s"),
-                        ])
-                        .style(Color::White),
-                )
-                .y_axis(
-                    Axis::default()
-                        .title("Usage (%)")
-                        .bounds([0.0, 100.0])
-                        .labels(["0%", "50%", "100%"])
-                        .style(Color::White),
-                );
-            frame.render_widget(cpu_usage_chart, cpu_block[0]);
-            
-            let system_name_check = self.system.os.as_deref().unwrap_or("UNKNOWN OS").to_ascii_uppercase();
-            let system_color = if system_name_check.contains("WINDOWS") {
-                Color::LightBlue
-            } else if system_name_check.contains("LINUX") {
-                Color::Yellow
-            } else if system_name_check.contains("MACOS") {
-                Color::Gray
-            } else {
-                Color::LightCyan
-            };
-
-            let sys_name = &self.system.os.as_deref().unwrap_or("Unknown OS").to_string();
-            let sys_vers_raw = &self.system.version.as_deref().unwrap_or("Unknown OS Version").to_string();
-            let sys_vers = sys_vers_raw
-                .split_once("(")
-                .map(|(before, _)|before)
-                .unwrap_or(sys_vers_raw)
-                .to_string()
-                .replace(['(', ')'], "");
-            let sys_kernel_raw = &self.system.version.as_deref().unwrap_or("Unknown Kernel").to_string();
-            let sys_kernel = sys_kernel_raw
-                .split_once("(")
-                .map(|(_, after)|after)
-                .unwrap_or(sys_kernel_raw)
-                .to_string()
-                .replace(['(', ')'], "");
-            let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
-            let sys_uptime = time_fmt(self.system.uptime);
-            let sys_boot = date_fmt(self.system.boot);
-            let sys_lines = vec![
-                Line::from(vec![
-                    Span::styled("OS: ", Style::default().bold()),
-                    Span::raw(sys_name),
-                ]),
-                Line::from(vec![
-                    Span::styled("Version: ", Style::default().bold()),
-                    Span::raw(sys_vers),
-                ]),
-                Line::from(vec![
-                    Span::styled("Kernel: ", Style::default().bold()),
-                    Span::raw(sys_kernel),
-                ]),
-                Line::from(vec![
-                    Span::styled("Host: ", Style::default().bold()),
-                    Span::raw(sys_host),
-                ]),
-                Line::from(vec![
-                    Span::styled("Uptime: ", Style::default().bold()),
-                    Span::raw(sys_uptime),
-                ]),
-                Line::from(vec![
-                    Span::styled("Booted: ", Style::default().bold()),
-                    Span::raw(sys_boot),
-                ]),
-            ];
-            let sys_info = Paragraph::new(sys_lines)
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::bordered()
-                    .title("System Info")
-                    .style(match self.device {
-                        DeviceSelector::System => {system_color},
-                        _ => {Color::White}
-                    })
-                );
-            let cpu_lines = vec![
-                Line::from(vec![
-                    Span::styled("Model: ", Style::default().bold()),
-                    Span::raw(&self.cpu.model),
-                ]),
-                Line::from(vec![
-                    Span::styled("Brand: ", Style::default().bold()),
-                    Span::raw(&self.cpu.brand),
-                ]),
-                Line::from(vec![
-                    Span::styled("Cores: ", Style::default().bold()),
-                    Span::raw(self.cpu.core_count.to_string()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Threads: ", Style::default().bold()),
-                    Span::raw(self.cpu.thread_count.to_string()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Arch: ", Style::default().bold()),
-                    Span::raw(&self.cpu.arch),
-                ]),
-            ];
-            let cpu_info = Paragraph::new(cpu_lines)
-                .wrap(Wrap { trim: false })
-                .block(Block::bordered()
-                    .style(match self.device {
-                        DeviceSelector::Processor => {cpu_color},
-                        _ => {Color::White}
-                    })
-                    .title("CPU Info")
-                );
-            let info_width = cpu_block[1].width.saturating_sub(2).max(1);
-            let cpu_info_height = cpu_info.line_count(info_width) as u16;
-            let sys_info_height = sys_info.line_count(info_width) as u16;
-            let cpu_info_vert = Layout::default()
-                .direction(Vertical)
-                .margin(0)
+            //Layouts
+            let largest = Layout::default()
+                .direction(Horizontal)
+                .margin(1)
                 .constraints(vec![
-                    Constraint::Length(cpu_info_height),
-                    Constraint::Fill(1),
-                    Constraint::Length(sys_info_height),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
                 ])
-                .split(cpu_block[1]);
+                .split(area);
+            //
 
-            frame.render_widget(sys_info, cpu_info_vert[2]);
-            frame.render_widget(cpu_info, cpu_info_vert[0]);
 
-            let latest_time = selected_cpu
-                    .freq_hist
-                    .last()
-                    .map(|(time, _)|*time)
-                    .unwrap_or(0.0);
+            let mut keybinds_list : Vec<ListItem> = Vec::new();
+            for (name, key) in self.config.keybinds.iter() {
+                keybinds_list.push(ListItem::new(format!("{name} => {key}")));
+            }
 
-            let x_end = latest_time.max(60.0);
-            let x_start = x_end - 60.0;
-            let x_middle = (x_start + x_end) / 2.0;
+            let list = List::new(keybinds_list)
+                .block(Block::bordered().title("Keybinds"))
+                .highlight_style(Modifier::REVERSED)
+                .highlight_symbol("> ");
+            frame.render_stateful_widget(list, largest[0], &mut self.config_key_state);
 
-            let max_bound = selected_cpu.freq_hist.iter().map(|(_, freq)| *freq).reduce(f64::max).unwrap_or(0.0) + 0.5;
-            let mid_bound = max_bound / 2.0;
-            let max_label = format!("{max_bound:.1}GHz");
-            let mid_label = format!("{mid_bound:.1}GHz");
+            let mut colors_list: Vec<ListItem> = Vec::new();
+            for (name, color) in self.config.colors.iter() {
+                colors_list.push(ListItem::new(format!("{name} => {color:?}")));
+            }
+            let list = List::new(colors_list)
+                .block(Block::bordered().title("Colors"))
+                .highlight_style(Modifier::REVERSED)
+                .highlight_symbol("> ");
+            frame.render_stateful_widget(list, largest[1], &mut self.config_col_state);
 
-            let cpu_freq_dataset = Dataset::default()
-                    .marker(Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(cpu_color))
-                    .data(&selected_cpu.freq_hist);
 
-            let cpu_freq = Chart::new(vec![cpu_freq_dataset])
-                .block(Block::bordered()
-                    .title("FREQUENCY")
-                    .style(match self.device {
-                        DeviceSelector::Processor => {cpu_color}
-                        _ => {Color::White}
-                    })
-                )
-                .x_axis(
-                    Axis::default()
-                        .title("Time(s)")
-                        .bounds([x_start, x_end])
-                        .labels([
-                            format!("{x_start:.0}s"),
-                            format!("{x_middle:.0}s"),
-                            format!("{x_end:.0}s"),
-                        ])
-                        .style(Color::White),
-                )
-                .y_axis(
-                    Axis::default()
-                        .bounds([0.0, max_bound])
-                        .labels(["0GHz", mid_label.as_str(), max_label.as_str()])
-                        .style(Color::White),
-                );
-            frame.render_widget(cpu_freq, cpu_info_vert[1]);
-    
         } else {
-            let error_msg = Paragraph::new("No CPU detected")
-                .block(Block::bordered().title("CPU"));
-            frame.render_widget(error_msg, large_upper[0]);
-        }
 
 
-        //RAM SECTORS
-        let mem_config_col = self.config.colors.memory;
-        let mem_color = Color::from(mem_config_col);
-        let mem_style = match self.device {
-            DeviceSelector::Memory => {mem_color}
-            _ => {Color::White}
-        };
-        //Raw Mem
-        let used_mem = ((self.memory.used / self.memory.capacity) * 100.0) as u64;
-        let bar_mem = Bar::default()
-            .value(used_mem)
-            .style(mem_style)
-            .label(Line::from(format!("{used_mem}%")));
-
-        let used_mem_chart = BarChart::vertical(vec![bar_mem])
-            .bar_width(used_inner[1].width.saturating_sub(2))
-            .bar_gap(0)
-            .max(100);
-        frame.render_widget(used_mem_chart, used_inner[1]);
-    
-        let bar_chart_outer = Block::bordered()
-            .title("RAM USAGE (%)")
-            .style(mem_style);
-        frame.render_widget(bar_chart_outer, ram_top[0]);
-
-        //Swap
-
-        let title = String::from("SWAP USAGE (%)");
-        if self.memory.swap.used == 0.0 {
-            let no_swap_block = Paragraph::new("Swap inactive...")
-                .block(Block::bordered().title(title).style(mem_style));
-            frame.render_widget(no_swap_block, ram_top[1]);
-        } else {
-            let swap_used = ((self.memory.swap.used / self.memory.swap.capacity) * 100.0) as u64;
-            let bar_swap = Bar::default()
-                .value(swap_used)
-                .style(mem_style)
-                .label(Line::from(format!("{swap_used}%")));
-    
-            let used_swap_chart = BarChart::vertical(vec![bar_swap])
-                .bar_width(used_inner[1].width.saturating_sub(2))
-                .bar_gap(0)
-                .max(100);
-            frame.render_widget(used_swap_chart, used_swap_inner[1]);
-        
-            let bar_chart_outer = Block::bordered()
-                .title(title)
-                .style(mem_style);
-            frame.render_widget(bar_chart_outer, ram_top[1]);
-        }
-
-        let (capacity, cap_unit) = format_bytes(self.memory.capacity);
-        let (used, used_unit) = format_bytes(self.memory.used);
-        let (free, free_unit) = format_bytes(self.memory.free);
-
-        let ram_lines = vec![
-            Line::from(vec![
-                Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
-            ]),
-            Line::from(vec![
-                Span::styled("Live: ", Style::default().bold()),
-            ]),
-            Line::from(vec![
-                Span::raw(" - In use: "),
-                Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
-            ]),
-            Line::from(vec![
-                Span::raw(" - Free: "),
-                Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
-            ]),
-        ];
-
-        let ram_info = Paragraph::new(ram_lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered()
-                .title("RAM")
-                .style(mem_style)
-            );
-        frame.render_widget(ram_info, ram_swap[0]);
-
-        let swap_used = self.memory.swap.used;
-        let (capacity, cap_unit) = format_bytes(self.memory.swap.capacity);
-        let (used, used_unit) = format_bytes(swap_used);
-        let (free, free_unit) = format_bytes(self.memory.swap.free);
-
-        let mut swap_lines = Vec::new();
-
-        if swap_used == 0.0 {
-            swap_lines = vec![
-            Line::from(vec![
-                Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
-            ]),
-            Line::from(vec![
-                Span::raw("System swap currently inactive... "),
-            ]),
-        ];
-        } else {
-            swap_lines = vec![
-            Line::from(vec![
-                Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
-            ]),
-            Line::from(vec![
-                Span::styled("Live: ", Style::default().bold()),
-            ]),
-            Line::from(vec![
-                Span::raw(" - In use: "),
-                Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
-            ]),
-            Line::from(vec![
-                Span::raw(" - Free: "),
-                Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
-            ]),
-        ];
-        }
-
-        let swap_info = Paragraph::new(swap_lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered()
-                .title("SWAP")
-                .style(mem_style)
-            );
-        frame.render_widget(swap_info, ram_swap[1]);
-
-        //GPU SECTORS
-        let gpu_index = self.gpu_selection.min(self.gpus.len().saturating_sub(1));
-        if let Some(selected_gpu) = self.gpus.get(gpu_index) {
-            let gpu_color= if selected_gpu.name.to_uppercase().contains("NVIDIA") {
-                Color::Green
-            } else if selected_gpu.name.to_uppercase().contains("AMD") {
-                Color::Red
-            } else if selected_gpu.name.to_uppercase().contains("INTEL") {
-                Color::Blue
-            } else {
-                Color::LightMagenta
-            };
-    
-            let data = &selected_gpu.history;
-    
-            // let display_name = selected_gpu.name
-            //     .replace("NVIDIA GeForce ", "")
-            //     .replace("Laptop GPU", "")
-            //     .replace("AMD Radeon ", "")
-            //     .replace("Graphics", "");
-
-            let name = format!("GPU {}", gpu_index);
-
-            let gpu_dataset_usage = Dataset::default()
-                .name(name)
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(gpu_color))
-                .data(data);
-    
-            let latest_time = selected_gpu
-                    .history
-                    .last()
-                    .map(|(time, _)|*time)
-                    .unwrap_or(0.0);
-    
-            let x_end = latest_time.max(60.0);
-            let x_start = x_end - 60.0;
-            let x_middle = (x_start + x_end) / 2.0;
-    
-            let gpu_usage_chart = Chart::new(vec![gpu_dataset_usage])
-                .block(Block::bordered()
-                    .title("GPU")
-                    .style(match self.device {
-                        DeviceSelector::Graphics => {gpu_color},
-                        _ => {Color::White}
-                    })    
-                )
-                .x_axis(
-                    Axis::default()
-                        .title("Time(s)")
-                        .bounds([x_start, x_end])
-                        .labels([
-                            format!("{x_start:.0}s"),
-                            format!("{x_middle:.0}s"),
-                            format!("{x_end:.0}s"),
-                        ])
-                        .style(Color::White),
-                )
-                .y_axis(
-                    Axis::default()
-                        .title("Usage (%)")
-                        .bounds([0.0, 100.0])
-                        .labels(["0%", "50%", "100%"])
-                        .style(Color::White),
-                );
-            frame.render_widget(gpu_usage_chart, gpu_block[0]);
-
-            let (used_vram, used_unit) = format_bytes(selected_gpu.used_vram_bytes as f64);
-            let (total_vram, total_unit) = format_bytes(selected_gpu.total_vram_bytes as f64);
-
-            let gpu_lines = vec![
-                Line::from(vec![
-                    Span::styled("GPU: ", Style::default().bold()),
-                    Span::raw(&selected_gpu.name),
-                ]),
-                Line::from(vec![
-                    Span::styled("UUID: ", Style::default().bold()),
-                    Span::raw(&selected_gpu.uuid),
-                ]),
-                Line::from(vec![
-                    Span::styled("VRAM: ", Style::default().bold()),
-                    Span::raw(format!("{used_vram:.2} {used_unit}")),
-                    Span::raw(" / "),
-                    Span::raw(format!("{total_vram:.2} {total_unit}")),
-                ]),
-                Line::from(vec![
-                    Span::styled("Power Consumption: ", Style::default().bold()),
-                    Span::raw(format!("{:.1}W", selected_gpu.power)),
-                ]),
-            ];
-
-            let gpu_info = Paragraph::new(gpu_lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered()
-                .title("GPU Info")
-                .style(match self.device {
-                    DeviceSelector::Graphics => {gpu_color}
-                    _ => {Color::White}
-                })
-            );
-            let gpu_info_height = gpu_info
-                .line_count(gpu_block[1].width.saturating_sub(2).max(1)) as u16;
-            let gpu_info_vert = Layout::default()
-                .direction(Vertical)
-                .margin(0)
-                .constraints(vec![
-                    Constraint::Length(gpu_info_height),
-                    Constraint::Length(5),
-                    Constraint::Fill(1),
-                ])
-                .split(gpu_block[1]);
-            let gpu_gauge_block = Layout::default()
+            let largest = Layout::default()
                 .direction(Vertical)
                 .margin(1)
                 .constraints(vec![
-                    Constraint::Percentage(15),
-                    Constraint::Percentage(70),
-                    Constraint::Percentage(15),
+                    Constraint::Percentage(4),
+                    Constraint::Percentage(49),
+                    Constraint::Percentage(47),
                 ])
-                .split(gpu_info_vert[1]);
-
-            frame.render_widget(gpu_info, gpu_info_vert[0]);
+                .split(area);
+    
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(format!("Selection: {}", self.device.name()), Style::default().bold()),
+                ]),
+                Line::from(vec![
+                    Span::raw(format!("{}", self.device.keybind_description(&self.config))),
+                ]),
+            ];
+            let top_bar = Paragraph::new(lines)
+                .alignment(Alignment::Center);
+    
+            frame.render_widget(top_bar, largest[0]);
+    
+            let large_upper = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(largest[1]);
+    
+            let large_lower = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(largest[2]);
+    
+            //CPU BLOCK
+            let cpu_block = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(40),
+                ])
+                .split(large_upper[0]);
+    
+            //RAM BLOCK
+            let ram_block = Layout::default()
+                .direction(Vertical)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(40),
+                ])
+                .split(large_upper[1]);
+    
             
-            let temp = selected_gpu.temp;
-            let gauge_bound = Block::bordered()
-                .title("GPU Temp (°C)")
-                .style(match self.device {
-                    DeviceSelector::Graphics => {gpu_color}
-                    _ => {Color::White}
-                });
-            frame.render_widget(gauge_bound, gpu_info_vert[1]);
-
-            let gpu_temp = Gauge::default()
-                .gauge_style(gpu_color)
-                .ratio((temp as f64) / 100.0)
-                .label(temp.to_string());
-            frame.render_widget(gpu_temp, gpu_gauge_block[1]);
+            let ram_top = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Max(20),
+                    Constraint::Max(20),
+                    Constraint::Fill(1),
+                ])
+                .split(ram_block[0]);
     
+            let ram_bottom = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(75),
+                ])
+                .split(ram_block[1]);
+            
+            let used_inner = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(13),
+                    Constraint::Percentage(80),
+                    Constraint::Percentage(7),
+                ])
+                .split(ram_top[0]);
     
-            let gpu_name = Block::bordered();
-            frame.render_widget(gpu_name, gpu_info_vert[2]);
-        } else {
-            let error_msg = Paragraph::new("No GPU detected")
-                .block(Block::bordered().title("GPU"));
-            frame.render_widget(error_msg, large_lower[0]);
-        }
-
-
-        //PROCESSES SECTORS
-        let prc_config_col = self.config.colors.processes;
-        let prc_color = Color::from(prc_config_col);
-        match self.process_selection {
-            Some(pid) => {
-                if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
-                    let path = textwrap::wrap(&process.exe, 60)
-                        .join("\n");
-
-                    let command = textwrap::wrap(&process.cmd, 60)
-                        .join("\n");
-
-                    let (memory, unit_mem) = format_bytes(process.memory_bytes as f64);
-                    let (virtual_memory, unit_virt) = format_bytes(process.virtual_memory_bytes as f64);
-                    let (read, unit_read) = format_bytes(process.read_bytes as f64);
-                    let (total_read, unit_total_read) = format_bytes(process.total_read_bytes as f64);
-                    let (write, unit_write) = format_bytes(process.write_bytes as f64);
-                    let (total_write, unit_total_write) = format_bytes(process.total_write_bytes as f64);
-
-                    let rows = vec![
-                        Row::new(vec![
-                            Cell::from("PID:"),
-                            Cell::from(process.pid.to_string()),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Parent:"),
-                            Cell::from(process.parent_pid.to_string()),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("CPU:"),
-                            Cell::from(format!(
-                                "{:.2} %",
-                                process.cpu_usage,
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Memory:"),
-                            Cell::from(format!(
-                                "{:.2} {}",
-                                memory,
-                                unit_mem
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Virtual:"),
-                            Cell::from(format!(
-                                "{:.2} {}",
-                                virtual_memory,
-                                unit_virt
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Reading:"),
-                            Cell::from(format!(
-                                "{:.2} {}/s",
-                                read,
-                                unit_read
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Total Read:"),
-                            Cell::from(format!(
-                                "{:.2} {}",
-                                total_read,
-                                unit_total_read
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Writing:"),
-                            Cell::from(format!(
-                                "{:.2} {}/s",
-                                write,
-                                unit_write
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Total Write:"),
-                            Cell::from(format!(
-                                "{:.2} {}",
-                                total_write,
-                                unit_total_write
-                            )),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Status:"),
-                            Cell::from(process.status.clone()),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Runtime:"),
-                            Cell::from(time_fmt(process.runtime)),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Started:"),
-                            Cell::from(date_fmt(process.boot)),
-                        ]),
-
-                        Row::new(vec![
-                            Cell::from("Path:"),
-                            Cell::from(path),
-                        ])
-                        .height(2),
-
-                        Row::new(vec![
-                            Cell::from("Command:"),
-                            Cell::from(command),
-                        ])
-                        .height(2),
-
-                        Row::new(vec![
-                            Cell::from("UserID:"),
-                            Cell::from(process.user.to_string()),
-                        ]),
-                    ];
-
-                    let widths = [
-                        Constraint::Length(12),
-                        Constraint::Min(10),
-                    ];
-
-                    let table = Table::new(rows, widths)
-                        .style(Style::default().fg(Color::White))
-                        .block(Block::bordered().style(Style::default().fg(prc_color)).title(process.name.clone()));
-
-                    frame.render_widget(table, large_lower[1]);
-                }
-                }
-            None => {
-                let width = large_lower[1].width as usize;
-                let processes: Vec<ListItem> = self.processes
-                    .iter()
-                    .map(|process| {
-                        let (memory, unit) = format_bytes(process.memory_bytes as f64);
-                        let usage = format!("{memory:.2} {unit}");
-                        let name = process.name.clone();
-        
-                        let spaces = if self.mem_offset == 0 {
-                            width.saturating_sub(name.len() + usage.len() + 3)
-                        } else {
-                            width.saturating_sub(name.len() + usage.len() + 5)
-                        };
-        
-                        let line = Line::from(vec![
-                            Span::raw(name),
-                            Span::raw(" ".repeat(spaces)),
-                            Span::raw(usage),
-                        ]);
-        
-                        ListItem::new(line)
-                    })
-                    .collect();
-        
-                let list = if processes.is_empty() {
-                    vec![ListItem::new(Span::raw("Attempting to retrieve processes...".to_string()))]
+            let ram_right = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(60),
+                ])
+                .split(ram_top[2]);
+    
+            let ram_swap = Layout::default()
+                .direction(Vertical)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(ram_right[0]);
+    
+            let top_processes = Layout::default()
+                .direction(Vertical)
+                .margin(1)
+                .constraints(vec![
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(ram_right[1]);
+    
+            let used_swap_inner = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(13),
+                    Constraint::Percentage(80),
+                    Constraint::Percentage(7),
+                ])
+                .split(ram_top[1]);
+    
+            //GPU BLOCK
+            let gpu_block = Layout::default()
+                .direction(Horizontal)
+                .margin(0)
+                .constraints(vec![
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(40),
+                ])
+                .split(large_lower[0]);
+    
+            //CPU SECTORS
+    
+            let cpu_index = self.cpu_selection.min(self.cpus.len().saturating_sub(1));
+            if let Some(selected_cpu) = self.cpus.get(cpu_index) {
+                let cpu_color = if self.cpu.brand.to_uppercase().contains("AMD") {
+                    Color::Red
+                } else if self.cpu.brand.to_uppercase().contains("INTEL") {
+                    Color::Blue
                 } else {
-                    processes
+                    Color::White
                 };
-                let list = List::new(list)
+        
+                let latest_time = selected_cpu
+                        .history
+                        .last()
+                        .map(|(time, _)|*time)
+                        .unwrap_or(0.0);
+        
+                let x_end = latest_time.max(60.0);
+                let x_start = x_end - 60.0;
+                let x_middle = (x_start + x_end) / 2.0;
+        
+                let cpu_name = if self.cpu_selection == 0 {
+                    "GLOBAL CPU"
+                } else {
+                    selected_cpu.thread.as_str()
+                };
+                let cpu_usage_dataset = Dataset::default()
+                        .name(cpu_name)
+                        .marker(Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(cpu_color))
+                        .data(&selected_cpu.history);
+        
+                let cpu_usage_chart = Chart::new(vec![cpu_usage_dataset])
                     .block(Block::bordered()
-                        .title("Processes")
+                        .title("CPU")
                         .style(match self.device {
-                            DeviceSelector::Processes => {prc_color},
+                            DeviceSelector::Processor => {cpu_color}
                             _ => {Color::White}
                         })
                     )
-                    .style(Color::White)
-                    .highlight_style(Modifier::REVERSED)
-                    .highlight_symbol("> ");
-                frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
-            }
-        }
+                    .x_axis(
+                        Axis::default()
+                            .title("Time(s)")
+                            .bounds([x_start, x_end])
+                            .labels([
+                                format!("{x_start:.0}s"),
+                                format!("{x_middle:.0}s"),
+                                format!("{x_end:.0}s"),
+                            ])
+                            .style(Color::White),
+                    )
+                    .y_axis(
+                        Axis::default()
+                            .title("Usage (%)")
+                            .bounds([0.0, 100.0])
+                            .labels(["0%", "50%", "100%"])
+                            .style(Color::White),
+                    );
+                frame.render_widget(cpu_usage_chart, cpu_block[0]);
+                
+                let system_name_check = self.system.os.as_deref().unwrap_or("UNKNOWN OS").to_ascii_uppercase();
+                let system_color = if system_name_check.contains("WINDOWS") {
+                    Color::LightBlue
+                } else if system_name_check.contains("LINUX") {
+                    Color::Yellow
+                } else if system_name_check.contains("MACOS") {
+                    Color::Gray
+                } else {
+                    Color::LightCyan
+                };
+    
+                let sys_name = &self.system.os.as_deref().unwrap_or("Unknown OS").to_string();
+                let sys_vers_raw = &self.system.version.as_deref().unwrap_or("Unknown OS Version").to_string();
+                let sys_vers = sys_vers_raw
+                    .split_once("(")
+                    .map(|(before, _)|before)
+                    .unwrap_or(sys_vers_raw)
+                    .to_string()
+                    .replace(['(', ')'], "");
+                let sys_kernel_raw = &self.system.version.as_deref().unwrap_or("Unknown Kernel").to_string();
+                let sys_kernel = sys_kernel_raw
+                    .split_once("(")
+                    .map(|(_, after)|after)
+                    .unwrap_or(sys_kernel_raw)
+                    .to_string()
+                    .replace(['(', ')'], "");
+                let sys_host = &self.system.name.as_deref().unwrap_or("Unknown Name").to_string();
+                let sys_uptime = time_fmt(self.system.uptime);
+                let sys_boot = date_fmt(self.system.boot);
+                let sys_lines = vec![
+                    Line::from(vec![
+                        Span::styled("OS: ", Style::default().bold()),
+                        Span::raw(sys_name),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Version: ", Style::default().bold()),
+                        Span::raw(sys_vers),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Kernel: ", Style::default().bold()),
+                        Span::raw(sys_kernel),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Host: ", Style::default().bold()),
+                        Span::raw(sys_host),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Uptime: ", Style::default().bold()),
+                        Span::raw(sys_uptime),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Booted: ", Style::default().bold()),
+                        Span::raw(sys_boot),
+                    ]),
+                ];
+                let sys_info = Paragraph::new(sys_lines)
+                    .wrap(Wrap { trim: false })
+                    .block(
+                        Block::bordered()
+                        .title("System Info")
+                        .style(match self.device {
+                            DeviceSelector::System => {system_color},
+                            _ => {Color::White}
+                        })
+                    );
+                let cpu_lines = vec![
+                    Line::from(vec![
+                        Span::styled("Model: ", Style::default().bold()),
+                        Span::raw(&self.cpu.model),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Brand: ", Style::default().bold()),
+                        Span::raw(&self.cpu.brand),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Cores: ", Style::default().bold()),
+                        Span::raw(self.cpu.core_count.to_string()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Threads: ", Style::default().bold()),
+                        Span::raw(self.cpu.thread_count.to_string()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Arch: ", Style::default().bold()),
+                        Span::raw(&self.cpu.arch),
+                    ]),
+                ];
+                let cpu_info = Paragraph::new(cpu_lines)
+                    .wrap(Wrap { trim: false })
+                    .block(Block::bordered()
+                        .style(match self.device {
+                            DeviceSelector::Processor => {cpu_color},
+                            _ => {Color::White}
+                        })
+                        .title("CPU Info")
+                    );
+                let info_width = cpu_block[1].width.saturating_sub(2).max(1);
+                let cpu_info_height = cpu_info.line_count(info_width) as u16;
+                let sys_info_height = sys_info.line_count(info_width) as u16;
+                let cpu_info_vert = Layout::default()
+                    .direction(Vertical)
+                    .margin(0)
+                    .constraints(vec![
+                        Constraint::Length(cpu_info_height),
+                        Constraint::Fill(1),
+                        Constraint::Length(sys_info_height),
+                    ])
+                    .split(cpu_block[1]);
+    
+                frame.render_widget(sys_info, cpu_info_vert[2]);
+                frame.render_widget(cpu_info, cpu_info_vert[0]);
+    
+                let latest_time = selected_cpu
+                        .freq_hist
+                        .last()
+                        .map(|(time, _)|*time)
+                        .unwrap_or(0.0);
+    
+                let x_end = latest_time.max(60.0);
+                let x_start = x_end - 60.0;
+                let x_middle = (x_start + x_end) / 2.0;
+    
+                let max_bound = selected_cpu.freq_hist.iter().map(|(_, freq)| *freq).reduce(f64::max).unwrap_or(0.0) + 0.5;
+                let mid_bound = max_bound / 2.0;
+                let max_label = format!("{max_bound:.1}GHz");
+                let mid_label = format!("{mid_bound:.1}GHz");
+    
+                let cpu_freq_dataset = Dataset::default()
+                        .marker(Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(cpu_color))
+                        .data(&selected_cpu.freq_hist);
+    
+                let cpu_freq = Chart::new(vec![cpu_freq_dataset])
+                    .block(Block::bordered()
+                        .title("FREQUENCY")
+                        .style(match self.device {
+                            DeviceSelector::Processor => {cpu_color}
+                            _ => {Color::White}
+                        })
+                    )
+                    .x_axis(
+                        Axis::default()
+                            .title("Time(s)")
+                            .bounds([x_start, x_end])
+                            .labels([
+                                format!("{x_start:.0}s"),
+                                format!("{x_middle:.0}s"),
+                                format!("{x_end:.0}s"),
+                            ])
+                            .style(Color::White),
+                    )
+                    .y_axis(
+                        Axis::default()
+                            .bounds([0.0, max_bound])
+                            .labels(["0GHz", mid_label.as_str(), max_label.as_str()])
+                            .style(Color::White),
+                    );
+                frame.render_widget(cpu_freq, cpu_info_vert[1]);
         
-        let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {prc_color}, _ => {Color::White}});
-        frame.render_widget(outer_block, ram_right[1]);
-        let mut temp: Vec<Process> = self.processes.clone();
-        temp.sort_by(|a, b| {b.cpu_usage.total_cmp(&a.cpu_usage)});
-        let mut lines = vec![
+            } else {
+                let error_msg = Paragraph::new("No CPU detected")
+                    .block(Block::bordered().title("CPU"));
+                frame.render_widget(error_msg, large_upper[0]);
+            }
+    
+    
+            //RAM SECTORS
+            let mem_config_col = self.config.colors.memory;
+            let mem_color = Color::from(mem_config_col);
+            let mem_style = match self.device {
+                DeviceSelector::Memory => {mem_color}
+                _ => {Color::White}
+            };
+            //Raw Mem
+            let used_mem = ((self.memory.used / self.memory.capacity) * 100.0) as u64;
+            let bar_mem = Bar::default()
+                .value(used_mem)
+                .style(mem_style)
+                .label(Line::from(format!("{used_mem}%")));
+    
+            let used_mem_chart = BarChart::vertical(vec![bar_mem])
+                .bar_width(used_inner[1].width.saturating_sub(2))
+                .bar_gap(0)
+                .max(100);
+            frame.render_widget(used_mem_chart, used_inner[1]);
+        
+            let bar_chart_outer = Block::bordered()
+                .title("RAM USAGE (%)")
+                .style(mem_style);
+            frame.render_widget(bar_chart_outer, ram_top[0]);
+    
+            //Swap
+    
+            let title = String::from("SWAP USAGE (%)");
+            if self.memory.swap.used == 0.0 {
+                let no_swap_block = Paragraph::new("Swap inactive...")
+                    .block(Block::bordered().title(title).style(mem_style));
+                frame.render_widget(no_swap_block, ram_top[1]);
+            } else {
+                let swap_used = ((self.memory.swap.used / self.memory.swap.capacity) * 100.0) as u64;
+                let bar_swap = Bar::default()
+                    .value(swap_used)
+                    .style(mem_style)
+                    .label(Line::from(format!("{swap_used}%")));
+        
+                let used_swap_chart = BarChart::vertical(vec![bar_swap])
+                    .bar_width(used_inner[1].width.saturating_sub(2))
+                    .bar_gap(0)
+                    .max(100);
+                frame.render_widget(used_swap_chart, used_swap_inner[1]);
+            
+                let bar_chart_outer = Block::bordered()
+                    .title(title)
+                    .style(mem_style);
+                frame.render_widget(bar_chart_outer, ram_top[1]);
+            }
+    
+            let (capacity, cap_unit) = format_bytes(self.memory.capacity);
+            let (used, used_unit) = format_bytes(self.memory.used);
+            let (free, free_unit) = format_bytes(self.memory.free);
+    
+            let ram_lines = vec![
+                Line::from(vec![
+                    Span::styled("Capacity: ", Style::default().bold()),
+                    Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Live: ", Style::default().bold()),
+                ]),
+                Line::from(vec![
+                    Span::raw(" - In use: "),
+                    Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
+                ]),
+                Line::from(vec![
+                    Span::raw(" - Free: "),
+                    Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
+                ]),
+            ];
+    
+            let ram_info = Paragraph::new(ram_lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered()
+                    .title("RAM")
+                    .style(mem_style)
+                );
+            frame.render_widget(ram_info, ram_swap[0]);
+    
+            let swap_used = self.memory.swap.used;
+            let (capacity, cap_unit) = format_bytes(self.memory.swap.capacity);
+            let (used, used_unit) = format_bytes(swap_used);
+            let (free, free_unit) = format_bytes(self.memory.swap.free);
+    
+            let mut swap_lines = Vec::new();
+    
+            if swap_used == 0.0 {
+                swap_lines = vec![
+                Line::from(vec![
+                    Span::styled("Capacity: ", Style::default().bold()),
+                    Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
+                ]),
+                Line::from(vec![
+                    Span::raw("System swap currently inactive... "),
+                ]),
+            ];
+            } else {
+                swap_lines = vec![
+                Line::from(vec![
+                    Span::styled("Capacity: ", Style::default().bold()),
+                    Span::raw(format!("{:.prec$} {}",capacity, cap_unit, prec = self.memory.prec_count)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Live: ", Style::default().bold()),
+                ]),
+                Line::from(vec![
+                    Span::raw(" - In use: "),
+                    Span::raw(format!("{:.prec$} {}",used, used_unit, prec = self.memory.prec_count)),
+                ]),
+                Line::from(vec![
+                    Span::raw(" - Free: "),
+                    Span::raw(format!("{:.prec$} {}",free, free_unit, prec = self.memory.prec_count)),
+                ]),
+            ];
+            }
+    
+            let swap_info = Paragraph::new(swap_lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered()
+                    .title("SWAP")
+                    .style(mem_style)
+                );
+            frame.render_widget(swap_info, ram_swap[1]);
+    
+            //GPU SECTORS
+            let gpu_index = self.gpu_selection.min(self.gpus.len().saturating_sub(1));
+            if let Some(selected_gpu) = self.gpus.get(gpu_index) {
+                let gpu_color= if selected_gpu.name.to_uppercase().contains("NVIDIA") {
+                    Color::Green
+                } else if selected_gpu.name.to_uppercase().contains("AMD") {
+                    Color::Red
+                } else if selected_gpu.name.to_uppercase().contains("INTEL") {
+                    Color::Blue
+                } else {
+                    Color::LightMagenta
+                };
+        
+                let data = &selected_gpu.history;
+        
+                // let display_name = selected_gpu.name
+                //     .replace("NVIDIA GeForce ", "")
+                //     .replace("Laptop GPU", "")
+                //     .replace("AMD Radeon ", "")
+                //     .replace("Graphics", "");
+    
+                let name = format!("GPU {}", gpu_index);
+    
+                let gpu_dataset_usage = Dataset::default()
+                    .name(name)
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(gpu_color))
+                    .data(data);
+        
+                let latest_time = selected_gpu
+                        .history
+                        .last()
+                        .map(|(time, _)|*time)
+                        .unwrap_or(0.0);
+        
+                let x_end = latest_time.max(60.0);
+                let x_start = x_end - 60.0;
+                let x_middle = (x_start + x_end) / 2.0;
+        
+                let gpu_usage_chart = Chart::new(vec![gpu_dataset_usage])
+                    .block(Block::bordered()
+                        .title("GPU")
+                        .style(match self.device {
+                            DeviceSelector::Graphics => {gpu_color},
+                            _ => {Color::White}
+                        })    
+                    )
+                    .x_axis(
+                        Axis::default()
+                            .title("Time(s)")
+                            .bounds([x_start, x_end])
+                            .labels([
+                                format!("{x_start:.0}s"),
+                                format!("{x_middle:.0}s"),
+                                format!("{x_end:.0}s"),
+                            ])
+                            .style(Color::White),
+                    )
+                    .y_axis(
+                        Axis::default()
+                            .title("Usage (%)")
+                            .bounds([0.0, 100.0])
+                            .labels(["0%", "50%", "100%"])
+                            .style(Color::White),
+                    );
+                frame.render_widget(gpu_usage_chart, gpu_block[0]);
+    
+                let (used_vram, used_unit) = format_bytes(selected_gpu.used_vram_bytes as f64);
+                let (total_vram, total_unit) = format_bytes(selected_gpu.total_vram_bytes as f64);
+    
+                let gpu_lines = vec![
                     Line::from(vec![
-                        Span::styled("Top CPU: ", Style::default().bold()),
+                        Span::styled("GPU: ", Style::default().bold()),
+                        Span::raw(&selected_gpu.name),
                     ]),
-        ];
-        for (rank, process) in temp.iter().take(5).enumerate() {
-            let pos = rank + 1;
-            let line = Line::from(vec![
-                        Span::styled(format!("{} - ", pos), Style::default().bold()),
-                        Span::raw(format!("{} : {:.1}%", process.name, process.cpu_usage))
-            ]);
-            lines.push(line);
-        }
-        let top_cpu_block = Paragraph::new(lines);
-        frame.render_widget(top_cpu_block, top_processes[0]);
-
-        let mut temp2: Vec<Process> = temp.clone();
-        temp2.sort_by(|a,b| {
-            let t_a = a.read_bytes + a.write_bytes;
-            let t_b = b.read_bytes + b.write_bytes;
-
-            t_b.cmp(&t_a)
-        });
-
-        let mut lines = vec![
                     Line::from(vec![
-                        Span::styled("Top I/O: ", Style::default().bold()),
+                        Span::styled("UUID: ", Style::default().bold()),
+                        Span::raw(&selected_gpu.uuid),
                     ]),
-        ];
-        for (rank, process) in temp2.iter().take(5).enumerate() {
-            let pos = rank + 1;
-            let (io_rate, unit) = format_bytes((process.read_bytes + process.write_bytes) as f64);
-            let line = Line::from(vec![
-                        Span::styled(format!("{} - ", pos), Style::default().bold()),
-                        Span::raw(format!("{} : {:.2} {}/s", process.name, io_rate, unit))
-            ]);
-            lines.push(line);
+                    Line::from(vec![
+                        Span::styled("VRAM: ", Style::default().bold()),
+                        Span::raw(format!("{used_vram:.2} {used_unit}")),
+                        Span::raw(" / "),
+                        Span::raw(format!("{total_vram:.2} {total_unit}")),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Power Consumption: ", Style::default().bold()),
+                        Span::raw(format!("{:.1}W", selected_gpu.power)),
+                    ]),
+                ];
+    
+                let gpu_info = Paragraph::new(gpu_lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered()
+                    .title("GPU Info")
+                    .style(match self.device {
+                        DeviceSelector::Graphics => {gpu_color}
+                        _ => {Color::White}
+                    })
+                );
+                let gpu_info_height = gpu_info
+                    .line_count(gpu_block[1].width.saturating_sub(2).max(1)) as u16;
+                let gpu_info_vert = Layout::default()
+                    .direction(Vertical)
+                    .margin(0)
+                    .constraints(vec![
+                        Constraint::Length(gpu_info_height),
+                        Constraint::Length(5),
+                        Constraint::Fill(1),
+                    ])
+                    .split(gpu_block[1]);
+                let gpu_gauge_block = Layout::default()
+                    .direction(Vertical)
+                    .margin(1)
+                    .constraints(vec![
+                        Constraint::Percentage(15),
+                        Constraint::Percentage(70),
+                        Constraint::Percentage(15),
+                    ])
+                    .split(gpu_info_vert[1]);
+    
+                frame.render_widget(gpu_info, gpu_info_vert[0]);
+                
+                let temp = selected_gpu.temp;
+                let gauge_bound = Block::bordered()
+                    .title("GPU Temp (°C)")
+                    .style(match self.device {
+                        DeviceSelector::Graphics => {gpu_color}
+                        _ => {Color::White}
+                    });
+                frame.render_widget(gauge_bound, gpu_info_vert[1]);
+    
+                let gpu_temp = Gauge::default()
+                    .gauge_style(gpu_color)
+                    .ratio((temp as f64) / 100.0)
+                    .label(temp.to_string());
+                frame.render_widget(gpu_temp, gpu_gauge_block[1]);
+        
+        
+                let gpu_name = Block::bordered();
+                frame.render_widget(gpu_name, gpu_info_vert[2]);
+            } else {
+                let error_msg = Paragraph::new("No GPU detected")
+                    .block(Block::bordered().title("GPU"));
+                frame.render_widget(error_msg, large_lower[0]);
+            }
+    
+    
+            //PROCESSES SECTORS
+            let prc_config_col = self.config.colors.processes;
+            let prc_color = Color::from(prc_config_col);
+            match self.process_selection {
+                Some(pid) => {
+                    if let Some(process) = self.processes.iter().find(|process| process.pid == pid) {
+                        let path = textwrap::wrap(&process.exe, 60)
+                            .join("\n");
+    
+                        let command = textwrap::wrap(&process.cmd, 60)
+                            .join("\n");
+    
+                        let (memory, unit_mem) = format_bytes(process.memory_bytes as f64);
+                        let (virtual_memory, unit_virt) = format_bytes(process.virtual_memory_bytes as f64);
+                        let (read, unit_read) = format_bytes(process.read_bytes as f64);
+                        let (total_read, unit_total_read) = format_bytes(process.total_read_bytes as f64);
+                        let (write, unit_write) = format_bytes(process.write_bytes as f64);
+                        let (total_write, unit_total_write) = format_bytes(process.total_write_bytes as f64);
+    
+                        let rows = vec![
+                            Row::new(vec![
+                                Cell::from("PID:"),
+                                Cell::from(process.pid.to_string()),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Parent:"),
+                                Cell::from(process.parent_pid.to_string()),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("CPU:"),
+                                Cell::from(format!(
+                                    "{:.2} %",
+                                    process.cpu_usage,
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Memory:"),
+                                Cell::from(format!(
+                                    "{:.2} {}",
+                                    memory,
+                                    unit_mem
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Virtual:"),
+                                Cell::from(format!(
+                                    "{:.2} {}",
+                                    virtual_memory,
+                                    unit_virt
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Reading:"),
+                                Cell::from(format!(
+                                    "{:.2} {}/s",
+                                    read,
+                                    unit_read
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Total Read:"),
+                                Cell::from(format!(
+                                    "{:.2} {}",
+                                    total_read,
+                                    unit_total_read
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Writing:"),
+                                Cell::from(format!(
+                                    "{:.2} {}/s",
+                                    write,
+                                    unit_write
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Total Write:"),
+                                Cell::from(format!(
+                                    "{:.2} {}",
+                                    total_write,
+                                    unit_total_write
+                                )),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Status:"),
+                                Cell::from(process.status.clone()),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Runtime:"),
+                                Cell::from(time_fmt(process.runtime)),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Started:"),
+                                Cell::from(date_fmt(process.boot)),
+                            ]),
+    
+                            Row::new(vec![
+                                Cell::from("Path:"),
+                                Cell::from(path),
+                            ])
+                            .height(2),
+    
+                            Row::new(vec![
+                                Cell::from("Command:"),
+                                Cell::from(command),
+                            ])
+                            .height(2),
+    
+                            Row::new(vec![
+                                Cell::from("UserID:"),
+                                Cell::from(process.user.to_string()),
+                            ]),
+                        ];
+    
+                        let widths = [
+                            Constraint::Length(12),
+                            Constraint::Min(10),
+                        ];
+    
+                        let table = Table::new(rows, widths)
+                            .style(Style::default().fg(Color::White))
+                            .block(Block::bordered().style(Style::default().fg(prc_color)).title(process.name.clone()));
+    
+                        frame.render_widget(table, large_lower[1]);
+                    }
+                    }
+                None => {
+                    let width = large_lower[1].width as usize;
+                    let processes: Vec<ListItem> = self.processes
+                        .iter()
+                        .map(|process| {
+                            let (memory, unit) = format_bytes(process.memory_bytes as f64);
+                            let usage = format!("{memory:.2} {unit}");
+                            let name = process.name.clone();
+            
+                            let spaces = if self.mem_offset == 0 {
+                                width.saturating_sub(name.len() + usage.len() + 3)
+                            } else {
+                                width.saturating_sub(name.len() + usage.len() + 5)
+                            };
+            
+                            let line = Line::from(vec![
+                                Span::raw(name),
+                                Span::raw(" ".repeat(spaces)),
+                                Span::raw(usage),
+                            ]);
+            
+                            ListItem::new(line)
+                        })
+                        .collect();
+            
+                    let list = if processes.is_empty() {
+                        vec![ListItem::new(Span::raw("Attempting to retrieve processes...".to_string()))]
+                    } else {
+                        processes
+                    };
+                    let list = List::new(list)
+                        .block(Block::bordered()
+                            .title("Processes")
+                            .style(match self.device {
+                                DeviceSelector::Processes => {prc_color},
+                                _ => {Color::White}
+                            })
+                        )
+                        .style(Color::White)
+                        .highlight_style(Modifier::REVERSED)
+                        .highlight_symbol("> ");
+                    frame.render_stateful_widget(list, large_lower[1], &mut self.list_state);
+                }
+            }
+            
+            let outer_block = Block::bordered().style(match self.device {DeviceSelector::Processes => {prc_color}, _ => {Color::White}});
+            frame.render_widget(outer_block, ram_right[1]);
+            let mut temp: Vec<Process> = self.processes.clone();
+            temp.sort_by(|a, b| {b.cpu_usage.total_cmp(&a.cpu_usage)});
+            let mut lines = vec![
+                        Line::from(vec![
+                            Span::styled("Top CPU: ", Style::default().bold()),
+                        ]),
+            ];
+            for (rank, process) in temp.iter().take(5).enumerate() {
+                let pos = rank + 1;
+                let line = Line::from(vec![
+                            Span::styled(format!("{} - ", pos), Style::default().bold()),
+                            Span::raw(format!("{} : {:.1}%", process.name, process.cpu_usage))
+                ]);
+                lines.push(line);
+            }
+            let top_cpu_block = Paragraph::new(lines);
+            frame.render_widget(top_cpu_block, top_processes[0]);
+    
+            let mut temp2: Vec<Process> = temp.clone();
+            temp2.sort_by(|a,b| {
+                let t_a = a.read_bytes + a.write_bytes;
+                let t_b = b.read_bytes + b.write_bytes;
+    
+                t_b.cmp(&t_a)
+            });
+    
+            let mut lines = vec![
+                        Line::from(vec![
+                            Span::styled("Top I/O: ", Style::default().bold()),
+                        ]),
+            ];
+            for (rank, process) in temp2.iter().take(5).enumerate() {
+                let pos = rank + 1;
+                let (io_rate, unit) = format_bytes((process.read_bytes + process.write_bytes) as f64);
+                let line = Line::from(vec![
+                            Span::styled(format!("{} - ", pos), Style::default().bold()),
+                            Span::raw(format!("{} : {:.2} {}/s", process.name, io_rate, unit))
+                ]);
+                lines.push(line);
+            }
+            let top_io_block = Paragraph::new(lines);
+            frame.render_widget(top_io_block, top_processes[1]);
+    
+    
+            //LOGO BLOCK
+            let logo_block = Block::bordered();
+            frame.render_widget(logo_block, ram_bottom[0]);
+            //
+    
+    
+            //DISK SECTION
+            let disk_config_col = self.config.colors.disk;
+            let disk_color = Color::from(disk_config_col);
+            let selected_disk = &self.disks[self.disk_selection];
+    
+            let (read, r_unit) = format_bytes(selected_disk.usage.read_bytes as f64);
+            let (t_read, tr_unit) = format_bytes(selected_disk.usage.total_read_bytes as f64);
+            let (write, w_unit) = format_bytes(selected_disk.usage.written_bytes as f64);
+            let (t_write, tw_unit) = format_bytes(selected_disk.usage.total_written_bytes as f64);
+    
+            let (cap, c_unit) = format_bytes(selected_disk.capacity as f64);
+            let (free, f_unit) = format_bytes(selected_disk.free as f64);
+    
+            let disk_lines = vec![
+                Line::from(vec![
+                    Span::styled("Name: ", Style::default().bold()),
+                    Span::raw(selected_disk.name.replace('"', ""))
+                ]),
+                Line::from(vec![
+                    Span::styled("Type: ", Style::default().bold()),
+                    Span::raw(&selected_disk.kind)
+                ]),
+                Line::from(vec![
+                    Span::styled("File System: ", Style::default().bold()),
+                    Span::raw(selected_disk.fs.replace('"', ""))
+                ]),
+                Line::from(vec![
+                    Span::styled("Mount Point: ", Style::default().bold()),
+                    Span::raw(&selected_disk.mnt)
+                ]),
+                Line::from(vec![
+                    Span::styled("Capacity: ", Style::default().bold()),
+                    Span::raw(format!("{:.2} {}", free, f_unit)),
+                    Span::raw(" / "),
+                    Span::raw(format!("{:.2} {}", cap, c_unit)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Read: ", Style::default().bold()),
+                    Span::raw(format!("{:.2} {}/s", read, r_unit)),
+                    Span::raw(" (current) | "),
+                    Span::raw(format!("{:.2} {}", t_read, tr_unit)),
+                    Span::raw(" (total)"),
+                ]),
+                Line::from(vec![
+                    Span::styled("Write: ", Style::default().bold()),
+                    Span::raw(format!("{:.2} {}/s", write, w_unit)),
+                    Span::raw(" (current) | "),
+                    Span::raw(format!("{:.2} {}", t_write, tw_unit)),
+                    Span::raw(" (total)"),
+                ]),
+            ];
+    
+            let disk_block = Paragraph::new(disk_lines)
+                .block(Block::bordered()
+                    .title("Disk Info")
+                    .style(match self.device {
+                        DeviceSelector::Disk => {disk_color}
+                        _ => {Color::White}
+                    })
+                )
+                .wrap(Wrap { trim: false });
+    
+            frame.render_widget(disk_block, ram_bottom[1]);
         }
-        let top_io_block = Paragraph::new(lines);
-        frame.render_widget(top_io_block, top_processes[1]);
 
-
-        //LOGO BLOCK
-        let logo_block = Block::bordered();
-        frame.render_widget(logo_block, ram_bottom[0]);
-        //
-
-
-        //DISK SECTION
-        let disk_config_col = self.config.colors.disk;
-        let disk_color = Color::from(disk_config_col);
-        let selected_disk = &self.disks[self.disk_selection];
-
-        let (read, r_unit) = format_bytes(selected_disk.usage.read_bytes as f64);
-        let (t_read, tr_unit) = format_bytes(selected_disk.usage.total_read_bytes as f64);
-        let (write, w_unit) = format_bytes(selected_disk.usage.written_bytes as f64);
-        let (t_write, tw_unit) = format_bytes(selected_disk.usage.total_written_bytes as f64);
-
-        let (cap, c_unit) = format_bytes(selected_disk.capacity as f64);
-        let (free, f_unit) = format_bytes(selected_disk.free as f64);
-
-        let disk_lines = vec![
-            Line::from(vec![
-                Span::styled("Name: ", Style::default().bold()),
-                Span::raw(selected_disk.name.replace('"', ""))
-            ]),
-            Line::from(vec![
-                Span::styled("Type: ", Style::default().bold()),
-                Span::raw(&selected_disk.kind)
-            ]),
-            Line::from(vec![
-                Span::styled("File System: ", Style::default().bold()),
-                Span::raw(selected_disk.fs.replace('"', ""))
-            ]),
-            Line::from(vec![
-                Span::styled("Mount Point: ", Style::default().bold()),
-                Span::raw(&selected_disk.mnt)
-            ]),
-            Line::from(vec![
-                Span::styled("Capacity: ", Style::default().bold()),
-                Span::raw(format!("{:.2} {}", free, f_unit)),
-                Span::raw(" / "),
-                Span::raw(format!("{:.2} {}", cap, c_unit)),
-            ]),
-            Line::from(vec![
-                Span::styled("Read: ", Style::default().bold()),
-                Span::raw(format!("{:.2} {}/s", read, r_unit)),
-                Span::raw(" (current) | "),
-                Span::raw(format!("{:.2} {}", t_read, tr_unit)),
-                Span::raw(" (total)"),
-            ]),
-            Line::from(vec![
-                Span::styled("Write: ", Style::default().bold()),
-                Span::raw(format!("{:.2} {}/s", write, w_unit)),
-                Span::raw(" (current) | "),
-                Span::raw(format!("{:.2} {}", t_write, tw_unit)),
-                Span::raw(" (total)"),
-            ]),
-        ];
-
-        let disk_block = Paragraph::new(disk_lines)
-            .block(Block::bordered()
-                .title("Disk Info")
-                .style(match self.device {
-                    DeviceSelector::Disk => {disk_color}
-                    _ => {Color::White}
-                })
-            )
-            .wrap(Wrap { trim: false });
-
-        frame.render_widget(disk_block, ram_bottom[1]);
     }
 }

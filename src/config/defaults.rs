@@ -13,6 +13,7 @@ pub struct Keybinds {
     pub processes: char,
     pub memory: char,
     pub network: char,
+    pub config: char,
 }
 
 impl Default for Keybinds {
@@ -26,6 +27,7 @@ impl Default for Keybinds {
             processes: 'p',
             memory: 'm',
             network: 'n',
+            config: 'z',
         }
     }
 }
@@ -41,6 +43,7 @@ impl Keybinds {
             ("processes", self.processes),
             ("memory", self.memory),
             ("network", self.network),
+            ("config", self.config),
         ];
 
         
@@ -70,6 +73,25 @@ impl Keybinds {
             Err(errors)
         }
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, char)> {
+        [
+            ("quit", self.quit),
+            ("system", self.system),
+            ("processor", self.processor),
+            ("graphics", self.graphics),
+            ("disk", self.disk),
+            ("processes", self.processes),
+            ("memory", self.memory),
+            ("network", self.network),
+            ("config", self.config),
+        ]
+        .into_iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.iter().count()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,6 +111,22 @@ impl Default for Colors {
             memory: ConfigColor::Red,
             network: ConfigColor::Cyan,
         }
+    }
+}
+
+impl Colors {
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, ConfigColor)> {
+        [
+            ("disk", ConfigColor::from(self.disk)),
+            ("processes", ConfigColor::from(self.processes)),
+            ("memory", ConfigColor::from(self.memory)),
+            ("network", ConfigColor::from(self.network)),
+        ]
+        .into_iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.iter().count()
     }
 }
 

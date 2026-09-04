@@ -1,53 +1,29 @@
 pub mod defaults;
 
-pub use defaults::*;
-use std::{error, fs::{self, File}, io, path::PathBuf};
-use serde::{Deserialize, Serialize};
+use color_eyre::eyre::{self, eyre};
+pub use defaults::{Colors, ConfigColor, Keybinds};
 use directories::ProjectDirs;
-use color_eyre::{
-    eyre::eyre,
-    Result,
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::{Path, PathBuf},
 };
-use ratatui::style::Color;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub keybinds: Keybinds,
     pub colors: Colors,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self { 
-            keybinds: Keybinds::default(), 
-            colors: Colors::default() 
-        }
-    }
-}
-
 pub fn load_config() -> eyre::Result<Config> {
-    let project_dirs = ProjectDirs::from(
-        "com",
-        "waterantonio103",
-        "system-watch",
-    )
-    .ok_or_else(|| eyre!("Could not determine config directory"))?;
-
-    let config_dir = project_dirs.config_dir();
-    let config_path = config_dir.join("syswatch.toml");
-
-    dbg!(&config_dir);
-    dbg!(&config_path);
-
-    fs::create_dir_all(config_dir)?;
+    let config_path = config_path()?;
 
     if !config_path.exists() {
-        return Ok(write_cfg(&config_path)?);
+        return write_cfg(&config_path);
     }
 
     let contents = fs::read_to_string(&config_path)?;
-    dbg!(&contents);
 
     let config = if contents.trim().is_empty() {
         write_cfg(&config_path)?
@@ -69,14 +45,11 @@ pub fn load_config() -> eyre::Result<Config> {
     if let Err(errors) = config.keybinds.validate() {
         return Err(eyre!(
             "invalid keybind configuration:\n- {}",
-            errors.iter()
+            errors
+                .iter()
                 .map(|(key, bindings)| {
                     let dupes = bindings.len();
-                    let mut conflicts = String::new();
-                    for name in bindings.iter() {
-                        let to_push = format!("{name}, ");
-                        conflicts.push_str(&to_push);
-                    }
+                    let conflicts = bindings.join(", ");
                     format!("Key '{key}' duplicated {dupes} times: {conflicts}")
                 })
                 .collect::<Vec<String>>()
@@ -87,7 +60,19 @@ pub fn load_config() -> eyre::Result<Config> {
     Ok(config)
 }
 
-fn write_cfg(path : &PathBuf) -> eyre::Result<Config> {
+fn config_path() -> eyre::Result<PathBuf> {
+    let project_dirs = ProjectDirs::from("com", "waterantonio103", "system-watch")
+        .ok_or_else(|| eyre!("Could not determine config directory"))?;
+
+    let config_dir = project_dirs.config_dir();
+    let config_path = config_dir.join("syswatch.toml");
+
+    fs::create_dir_all(config_dir)?;
+
+    Ok(config_path)
+}
+
+fn write_cfg(path: &Path) -> eyre::Result<Config> {
     let config = Config::default();
     let contents = toml::to_string_pretty(&config)?;
 
@@ -96,5 +81,11 @@ fn write_cfg(path : &PathBuf) -> eyre::Result<Config> {
     Ok(config)
 }
 
+pub fn save_cfg(config: &Config) -> eyre::Result<()> {
+    let config_path = config_path()?;
+    let contents = toml::to_string_pretty(config)?;
 
+    fs::write(config_path, contents)?;
 
+    Ok(())
+}

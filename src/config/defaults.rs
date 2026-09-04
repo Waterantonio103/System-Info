@@ -1,6 +1,5 @@
-use color_eyre::eyre;
-use serde::{Deserialize, Serialize};
 use ratatui::style::Color;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +32,35 @@ impl Default for Keybinds {
 }
 
 impl Keybinds {
+    pub fn set(&mut self, index: usize, key: char) -> Result<(), String> {
+        if index >= self.len() {
+            return Err(format!("invalid keybind index: {index}"));
+        }
+
+        if self
+            .iter()
+            .enumerate()
+            .any(|(other_index, (_, other_key))| other_index != index && other_key == key)
+        {
+            return Err(format!("'{key}' is already in use"));
+        }
+
+        match index {
+            0 => self.quit = key,
+            1 => self.system = key,
+            2 => self.processor = key,
+            3 => self.graphics = key,
+            4 => self.disk = key,
+            5 => self.processes = key,
+            6 => self.memory = key,
+            7 => self.network = key,
+            8 => self.config = key,
+            _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), Vec<(char, Vec<String>)>> {
         let bindings = [
             ("quit", self.quit),
@@ -46,24 +74,23 @@ impl Keybinds {
             ("config", self.config),
         ];
 
-        
-        let mut errors : Vec<(char, Vec<String>)> = Vec::new();
+        let mut errors: Vec<(char, Vec<String>)> = Vec::new();
         for (index, (name, key)) in bindings.iter().enumerate() {
             let mut names: Vec<String> = Vec::new();
-            if errors.iter().any(|(k,_)| k == key) {
+            if errors.iter().any(|(k, _)| k == key) {
                 continue;
-            } else {
-                for (other_name, other_key) in &bindings[index + 1..] {
-                    if key == other_key {
-                        names.push(format!("{name}"));
-                        names.push(format!("{other_name}"));
-                    }
+            }
+
+            for (other_name, other_key) in &bindings[index + 1..] {
+                if key == other_key {
+                    names.push((*name).to_string());
+                    names.push((*other_name).to_string());
                 }
-                if !names.is_empty() {
-                    names.sort();
-                    names.dedup();
-                    errors.push((*key, names));
-                }
+            }
+            if !names.is_empty() {
+                names.sort();
+                names.dedup();
+                errors.push((*key, names));
             }
         }
 
@@ -94,6 +121,30 @@ impl Keybinds {
     }
 }
 
+#[cfg(test)]
+mod keybind_tests {
+    use super::Keybinds;
+
+    #[test]
+    fn sets_the_selected_keybind() {
+        let mut keybinds = Keybinds::default();
+
+        assert_eq!(keybinds.set(1, 'x'), Ok(()));
+        assert_eq!(keybinds.system, 'x');
+    }
+
+    #[test]
+    fn rejects_a_keybind_that_is_already_in_use() {
+        let mut keybinds = Keybinds::default();
+
+        assert_eq!(
+            keybinds.set(1, keybinds.quit),
+            Err("'q' is already in use".to_string())
+        );
+        assert_eq!(keybinds.system, 's');
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Colors {
@@ -117,10 +168,10 @@ impl Default for Colors {
 impl Colors {
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, ConfigColor)> {
         [
-            ("disk", ConfigColor::from(self.disk)),
-            ("processes", ConfigColor::from(self.processes)),
-            ("memory", ConfigColor::from(self.memory)),
-            ("network", ConfigColor::from(self.network)),
+            ("disk", self.disk),
+            ("processes", self.processes),
+            ("memory", self.memory),
+            ("network", self.network),
         ]
         .into_iter()
     }
@@ -128,24 +179,9 @@ impl Colors {
     pub fn len(&self) -> usize {
         self.iter().count()
     }
-
-    pub fn select(&self, index: usize) -> ConfigColor {
-        let selection = self.iter().nth(index);
-        match selection {
-            Some(color) => {return color.1;},
-            None => {return ConfigColor::White}
-        }
-    }
 }
 
-#[derive(
-    Debug,
-    Default,
-    Clone,
-    Copy,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigColor {
     #[default]
@@ -216,10 +252,61 @@ impl ConfigColor {
             Self::LightMagenta,
             Self::LightCyan,
             Self::White,
+            Self::Rgb(0, 0, 0),
+            Self::Indexed(0),
         ]
         .into_iter()
     }
+
+    pub fn picker_label(self) -> &'static str {
+        match self {
+            Self::Reset => "Reset",
+            Self::Black => "Black",
+            Self::Red => "Red",
+            Self::Green => "Green",
+            Self::Yellow => "Yellow",
+            Self::Blue => "Blue",
+            Self::Magenta => "Magenta",
+            Self::Cyan => "Cyan",
+            Self::Gray => "Gray",
+            Self::DarkGray => "Dark Gray",
+            Self::LightRed => "Light Red",
+            Self::LightGreen => "Light Green",
+            Self::LightYellow => "Light Yellow",
+            Self::LightBlue => "Light Blue",
+            Self::LightMagenta => "Light Magenta",
+            Self::LightCyan => "Light Cyan",
+            Self::White => "White",
+            Self::Rgb(_, _, _) => "RGB...",
+            Self::Indexed(_) => "Indexed...",
+        }
+    }
+
     pub fn len() -> usize {
         ConfigColor::iter().count()
+    }
+
+    pub fn select(index: usize) -> Self {
+        ConfigColor::iter().nth(index).unwrap_or(ConfigColor::White)
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::{Colors, ConfigColor};
+
+    #[test]
+    fn custom_colors_survive_a_toml_round_trip() {
+        let colors = Colors {
+            disk: ConfigColor::Rgb(12, 34, 56),
+            network: ConfigColor::Indexed(201),
+            ..Colors::default()
+        };
+
+        let encoded = toml::to_string_pretty(&colors).unwrap();
+        let decoded: Colors = toml::from_str(&encoded).unwrap();
+
+        assert!(matches!(decoded.disk, ConfigColor::Rgb(12, 34, 56)));
+        assert!(matches!(decoded.network, ConfigColor::Indexed(201)));
     }
 }
